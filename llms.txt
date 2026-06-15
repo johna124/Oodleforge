@@ -1,11 +1,27 @@
-# Oodleforge
-An ultra-fast, multi-threaded Oodle archive precompressor.
+# Oodleforge (v33.1) - The Memory Beast Edition
+An ultra-fast, highly optimized multi-threaded precompressor designed for byte-perfect extraction and reconstruction of OodleLZ game archives (Kraken, Leviathan, Mermaid, Selkie).
 
-## Core Architecture
-- main.cpp: Entry point, argument parsing, space-allocation checks.
-- scan.cpp: Sliding window scanner, O(log N) binary search for block lengths.
-- reconstruct.cpp: AES re-encryption, 64MB async double-buffered disk ring writer.
+## Technical Architecture & Constraints
+- **Toolchain:** Designed strictly for GCC/Clang (Linux or MinGW-w64 on Windows). Native MSVC is explicitly unsupported due to POSIX dependency structures (`<dlfcn.h>`, `<unistd.h>`).
+- **Dependencies:** Dynamically loads Oodle runtime libraries (`oo2core_9_win64.dll`, `oo2core_8_win64.dll`, or Linux equivalents).
+- **Format Markers:** Archive Header Magic: `0x50524546` ("PREF"). Block Magic: `0x424C4B58` ("BLKX").
+- **Security:** Built-in AES-256 decryption/encryption layer requiring 64-hex character keys, enforced via 16-byte cryptographic block alignments.
 
-## Key Subsystems
-- FastStreamWriter: Asymmetric thread pipeline preventing disk thrashing.
-- TryMatchBlock: thread_local buffer optimization with reader-writer locks.
+## Core File Manifest & Subsystems
+
+### 1. Entry Point & Orchestration
+- `main.cpp`: Implements strict positional argument parsing and command validation. Executes high-level operations (`scan`, `e`, `r`). Features an automatic 1GB pre-flight filesystem disk space preservation guard before processing allocations.
+
+### 2. Algorithmic Optimization & Analysis
+- `scan.cpp`: Handles archive analysis and signature scanning. 
+  - *Key Routine:* `FindCompressedSize` implements an $O(\log N)$ binary search probing mechanism using `OodleLZ_Decompress` to rapidly isolate exact compressed block boundaries ($csize$) without linear brute-forcing.
+  - *Concurrency Patterns:* Employs a zero-allocation `thread_local std::vector<uint8_t>` pool to bypass global heap contention across concurrent workers. Uses `std::shared_mutex` for configuration settings caching to allow non-blocking parallel reader threads.
+
+### 3. Asynchronous I/O Pipeline & Restoration
+- `reconstruct.cpp`: Manages byte-perfect reconstruction and optional AES re-encryption.
+  - *The Memory Beast Engine (`FastStreamWriter`):* Implements a 64MB double-buffered asynchronous ring buffer. Decouples multi-threaded worker pipelines from physical disk operations by routing outputs to RAM pages, drained by a single dedicated sequential write worker to completely eliminate disk head thrashing.
+  - *Layout Architecture:* Appends structural metadata arrays (`PreBlock`) directly to the tail-end of processed archives for seamless single-pass streaming.
+  - *Memory Management:* Controls memory backpressure via explicit thread-count proportional constraints on `dec_queue` and proactive `.shrink_to_fit()` heap reclamation.
+
+## Diagnostic & Telemetry Streams
+- `common.cpp` / `common.h`: Houses the core UI update architecture. Isolates heavy speed/ETA calculations (using bounded microsecond offsets to protect against division-by-zero cycles) from output render passes. Uses ANSI runic escape sequences (`\r\033[K`) to achieve flicker-free terminal updates under highly concurrent load factors.
