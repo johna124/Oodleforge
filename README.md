@@ -7,8 +7,6 @@
 
 ## About
 
-In just two months, the Oodleforger created a tool that surpassed the 20-year-old Precomp Classic. Now, with the Memory Beast architecture (v33.1), it has become the new standard for perfect Oodle archive handling.
-
 This tool lets you:
 - Perfectly detect and extract Oodle blocks
 - Build byte-for-byte exact archives
