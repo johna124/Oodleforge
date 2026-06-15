@@ -1,0 +1,11 @@
+# Oodleforge
+An ultra-fast, multi-threaded Oodle archive precompressor.
+
+## Core Architecture
+- main.cpp: Entry point, argument parsing, space-allocation checks.
+- scan.cpp: Sliding window scanner, O(log N) binary search for block lengths.
+- reconstruct.cpp: AES re-encryption, 64MB async double-buffered disk ring writer.
+
+## Key Subsystems
+- FastStreamWriter: Asymmetric thread pipeline preventing disk thrashing.
+- TryMatchBlock: thread_local buffer optimization with reader-writer locks.
