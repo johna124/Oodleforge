@@ -18,11 +18,11 @@ Traditional hand-written code avoids these, but is slower. This methodology brid
 
 ## Core Principles
 
-1. **AI is a junior developer, not a vendor.** It drafts, you supervise.
-2. **Compilation ≠ correctness.** Real validation requires stress testing.
-3. **Domain expertise is non-negotiable.** You must understand what the code should do.
-4. **Integration happens first.** Theory-correct code means nothing if it can't call real libraries.
-5. **Tests document assumptions.** They're not optional busywork.
+1. **You and AI are teammates with different strengths.** AI brings speed and consistency. You bring domain expertise and judgment. Together you build something neither could alone.
+2. **Compilation ≠ correctness.** Real validation requires stress testing—a team effort.
+3. **Domain expertise is non-negotiable.** You must understand what the code should do and articulate it clearly to your partner.
+4. **Integration happens first.** Theory-correct code means nothing if it can't call real libraries—test together early.
+5. **Tests document shared assumptions.** They're not optional busywork—they're proof the team's vision works.
 
 ---
 
@@ -57,10 +57,12 @@ Traditional hand-written code avoids these, but is slower. This methodology brid
 
 ---
 
-## Phase 2: Code Generation (AI-Led, Human-Supervised)
+## Phase 2: Co-Development (Collaborative)
 
-### 2.1 Prompt the AI with Context
-Don't just say "write a compression tool." Provide:
+AI drafts with your architecture as the blueprint. You refine in real-time, asking questions that shape iterations. This is dialogue, not inspection.
+
+### 2.1 Brief Your Partner Clearly
+Don't just say "write a compression tool." Your teammate needs full context:
 ```
 Generate C++ code for: [specific problem]
 
@@ -83,41 +85,41 @@ Error handling:
 - Thread pool should handle task queueing gracefully
 ```
 
-### 2.2 Read & Question Every Section
-- **Don't just compile.** Read the generated code.
-- Ask: "Why that algorithm? Is there a race condition? What happens if X fails?"
-- Check function signatures match real library APIs (don't trust AI on external library details)
-- Verify thread safety: are there shared resources without locks?
-- Look for assumptions: "Does this code assume blocks are aligned? What if they're not?"
+### 2.2 Review Together as a Team
+- **Read the code out loud mentally.** Understand it before running it.
+- **Ask your partner:** "Why that algorithm? Is there a race condition? What happens if X fails?"
+- **Validate together:** Check function signatures match real library APIs. AI can hallucinate API details—verify with docs.
+- **Think critically:** Are there shared resources without locks? Does code assume blocks are aligned? What if they're not?
+- **Treat questions as collaboration,** not criticism. "Let's revisit this" not "this is wrong."
 
-### 2.3 Flag Issues Early
-If you spot problems, **don't ignore them:**
-- Magic bytes without explanation → request comments
-- Thread operations without visible synchronization → ask about mutex placement
-- Error handling missing → request Result<T> pattern
-- Performance claims without profiling → flag for later testing
+### 2.3 Iterate Together on Issues
+When you spot something questionable, **discuss it:**
+- "The magic bytes are correct but let's add a comment explaining why they're 0x8C"
+- "The thread operations look safe, but let's add visible synchronization comments so future reviewers understand"
+- "Error handling here should use the Result<T> pattern—let's refactor"
+- "This performance claim needs stress testing to back it up"
 
-**Red flags to always investigate:**
-- Hardcoded array sizes (will fail on different data volumes)
-- Assumptions about input format (no validation before processing)
-- Silent failures (errors logged but code continues)
-- Resource leaks (allocations without cleanup)
+**Red flags that need team discussion:**
+- Hardcoded array sizes (will fail on different data volumes) — redesign together
+- Assumptions about input format (no validation) — add guards together
+- Silent failures (errors logged but code continues) — decide error strategy together
+- Resource leaks (allocations without cleanup) — implement lifetime strategy together
 
 ---
 
-## Phase 3: Integration (Hybrid)
+## Phase 3: Integration (Shared Responsibility)
 
-### 3.1 Build Against Real Dependencies
-Don't test with mock objects. Use actual:
+### 3.1 Test Against Real Systems Together
+Don't use mocks. Build with actual:
 - Oodle DLLs (or whatever your external library is)
 - Real file I/O (not in-memory buffers)
 - Actual threading libraries
 - Real cryptography (not toy implementations)
 
-This forces the code to prove it works, not just compile.
+This forces the partnership to prove the design works against reality.
 
-### 3.2 Write Integration Tests First
-Before full validation, run small smoke tests:
+### 3.2 Write Smoke Tests Together
+Before full validation, run small integration tests:
 - Load the external library correctly
 - Call a function with expected parameters
 - Verify return types match
@@ -140,18 +142,19 @@ void TestBasicEncoding() {
 }
 ```
 
-### 3.3 Iteratively Refine
-- Test fails? Don't blame the AI—understand why.
-- Missing functionality? Ask the AI to add it, then test again.
-- Performance inadequate? Profile, identify bottleneck, iterate.
+### 3.3 Iterate as Partners
+- Test fails? Investigate together—understand the root cause.
+- Missing functionality? Discuss the design, then ask AI to implement it.
+- Performance inadequate? Profile together, identify bottleneck, iterate.
+- Find an edge case? Add it to the test suite together so it doesn't regress.
 
-**Don't ship until integration works.**
+**Team rule: Don't ship until integration works.**
 
 ---
 
-## Phase 4: Stress Testing (Human-Led)
+## Phase 4: Stress Testing (Team Validation)
 
-This is where most projects fail. You must stress test *before* release.
+This is where most partnerships fail. You must stress test together *before* release.
 
 ### 4.1 Real-World Data
 - Use actual data files (your game assets, firmware, whatever)
@@ -184,19 +187,20 @@ Exact Matches: 2005 / 2078 = 96.5% ✓
 - Error rates (failed blocks, crashes)
 - Time to completion
 
-### 4.4 Validate Assumptions
+### 4.4 Validate Your Team's Shared Assumptions
+These are decisions you made together. Prove they work:
 - "Block detection finds blocks accurately" → count false positives
 - "AES integration doesn't degrade performance" → measure with/without encryption
 - "4 threads give linear speedup" → compare 1-thread vs. 4-thread throughput
 - "Async I/O improves over synchronous" → benchmark both
 
-**If any assumption fails, investigate and iterate.**
+**If any assumption fails, don't blame anyone—you're a team. Discuss what you learned and iterate together.**
 
 ---
 
-## Phase 5: Test Suite (Before Release)
+## Phase 5: Test Suite (Team Documentation)
 
-**Do not publish until you have tests.**
+**Do not publish until your team has tests.** Tests are how you document what you built together and prove it works.
 
 ### 5.1 Unit Tests
 - Core algorithms (block detection, encoding, reconstruction)
@@ -248,90 +252,92 @@ TEST(RoundTrip, 61MBAssetStress) {
 
 ## Phase 6: Documentation & Transparency
 
-### 6.1 Explain Your Choices
+### 6.1 Explain Your Team's Choices
 - Why this architecture?
-- What does the AI handle, what did you refine?
+- What does each team member (human + AI) bring to the solution?
 - Known limitations (the 73 "failed" blocks in Oodleforge—why do they happen?)
 - Format specifications (Oodle magic bytes, AES integration details)
 
-### 6.2 Record the Process
-- What did the AI get wrong initially?
-- How did you supervise it?
-- What integration issues did you discover?
-- How did you validate accuracy?
+### 6.2 Record Your Partnership Process
+- What did we discover together during integration?
+- How did we validate our design assumptions?
+- What edge cases did we uncover during stress testing?
+- How did we measure accuracy and performance?
 
-### 6.3 Be Honest About Authorship
-- "Code generated by AI under human supervision"
-- "Stress-tested with real 61MB asset data"
-- "96.5% exact reconstruction accuracy (73 blocks use fallback methods)"
+### 6.3 Be Honest About Collaboration
+- "Code generated by AI, refined and validated by human partner"
+- "Designed together, stress-tested with real 61MB asset data"
+- "96.5% exact reconstruction accuracy (73 blocks use fallback methods we chose together)"
 
-**This honesty is your competitive advantage.** Most projects hide their origins. You show the work.
+**This transparency is your competitive advantage.** Most projects hide how they were built. You show the partnership that made it work.
 
 ---
 
-## Phase 7: Maintenance & Evolution
+## Phase 7: Maintenance & Evolution (Ongoing Partnership)
 
-### 7.1 Add Tests Before Features
-- New feature? Write test first, then code it.
-- Bug report? Write failing test that reproduces it, then fix it.
+### 7.1 Build Features Together
+- New feature? Write the test together first, then implement it.
+- Bug report? Write a failing test that reproduces it, then fix it as a team.
+- Design debate? Prototype both approaches and measure which works better.
 
-### 7.2 Regression Testing on Every Release
-- Run full stress suite
-- Compare metrics against baseline
-- Don't release if performance drops
+### 7.2 Team Regression Testing
+- Run full stress suite together
+- Compare metrics against your shared baseline
+- Don't release if performance drops—understand why and fix together
 
-### 7.3 Cross-Platform Validation
+### 7.3 Expand Together
 - Test on different OSes, architectures, compilers
 - Oodle DLL loading may differ on Windows vs. Linux
-- Thread behavior varies by OS
+- Thread behavior varies by OS—document what you learn together
 
 ---
 
-## Summary: The Discipline
+## Summary: Partnership Discipline
 
-| Phase | Lead | Outcome | Validation |
-|-------|------|---------|-----------|
-| Architecture | Human | Design document | Code reads correctly |
-| Generation | AI | Source code | Compiles, no obvious issues |
-| Integration | Human + AI | Real library calls | Links, runs without crashes |
-| Stress Test | Human | Performance data | Meets baselines, 96%+ accuracy |
-| Tests | Human | Test suite | 100+ cases covering edge cases |
-| Release | Human | GitHub project | Documented, reproducible |
-
----
-
-## Red Flags: When to Reject AI Code
-
-- **It compiles but you don't understand why** → Don't ship
-- **Integration requires "just a wrapper"** → Understand that wrapper first
-- **Performance is unverified** → Measure before claiming anything
-- **Error handling is missing** → Add it before shipping
-- **No tests exist** → Write them before release
-- **You can't explain a design choice** → Ask the AI, understand, then commit
+| Phase | Team Role | Outcome | Proof It Works |
+|-------|-----------|---------|----------------|
+| Architecture | Collaborate | Design document | Both understand the vision |
+| Co-Development | Collaborate | Source code | Review together, ask questions |
+| Integration | Collaborate | Real library calls | Links, runs, doesn't crash |
+| Stress Test | Collaborate | Performance data | Meets baselines, 96%+ accuracy |
+| Tests | Collaborate | Test suite | 100+ cases, edge cases covered |
+| Release | Collaborate | GitHub project | Documented, reproducible, honest |
 
 ---
 
-## What This Methodology Gives You
+## Red Flags: When the Team Needs to Pause
 
-✅ **Reliability:** Code is stress-tested before release  
-✅ **Maintainability:** Tests document behavior, future changes are safe  
-✅ **Credibility:** You can claim "96.5% accuracy" because you measured it  
-✅ **Speed:** AI handles boilerplate, you focus on design & validation  
-✅ **Uniqueness:** Your process becomes an asset, not just the code  
+- **Code compiles but neither of you fully understands why** → Pause and review together
+- **Integration requires "just a wrapper"** → Understand that wrapper before proceeding
+- **Performance is unverified** → Measure before shipping
+- **Error handling is missing** → Design the strategy together, then implement
+- **No tests exist** → Write them as a team before release
+- **You can't explain a design choice together** → Have the conversation, don't move forward until you both understand
 
 ---
 
-## Example: Oodleforge
+## What This Partnership Gives You
 
-This methodology produced:
+✅ **Reliability:** You built something solid together and proved it works  
+✅ **Maintainability:** Tests document the shared vision, future changes are safe  
+✅ **Credibility:** You can claim "96.5% accuracy" because you measured it together  
+✅ **Speed:** AI's strengths in consistency complement your strengths in judgment  
+✅ **Uniqueness:** Your partnership process becomes an asset—shows how to actually build with AI  
+✅ **Repeatability:** This methodology works for your next project, and the next  
+
+---
+
+## Example: Oodleforge — A Team Effort
+
+This partnership produced:
 - 2000+ lines of clean, integrated C++ code
 - 61MB stress test with real game assets
-- 96.5% reconstruction accuracy validated
+- 96.5% reconstruction accuracy validated together
 - End-to-end AES-256 encryption working correctly
 - 4-thread async pipeline proven under load
 - Zero production failures to date
 
-The code wasn't hand-written. But it was *supervised*, *tested*, and *proven*. That's the difference.
+The code wasn't hand-written by one person. It was *built by a team*—AI and human working together, each contributing their strengths. One brought speed and consistency. One brought domain expertise and judgment. Together they shipped something that works. That's the difference.
 
 ---
 
@@ -349,4 +355,4 @@ The code wasn't hand-written. But it was *supervised*, *tested*, and *proven*. T
 
 ---
 
-*This methodology isn't about trusting the AI. It's about verifying the output, understanding the code, and proving it works. Do that, and AI-assisted development becomes a genuine engineering practice.*
+*This methodology isn't about trusting or supervising the AI. It's about building together: clarifying vision, questioning decisions, validating assumptions, and proving the work. Do that, and AI-assisted development becomes genuine partnership—something greater than either could achieve alone.*
