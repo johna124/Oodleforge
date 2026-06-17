@@ -1,3 +1,5 @@
+![Oodleforge Meme](https://github.com/johna124/Oodleforge/blob/main/manifesto.jpg)
+
 # AI-Supervised Development: A Methodology for Reliable Code
 
 **Author's Note:** This methodology emerged from developing [Oodleforge](https://github.com/johna124/Oodleforg), a compression/reconstruction tool where AI-generated code passed real-world stress tests. It is not magic or abstract theory—it is practical workflow optimization.
