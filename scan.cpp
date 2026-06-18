@@ -41,7 +41,11 @@ static bool TryMatchBlock(const std::shared_ptr<BlockTask>& task,
             if (CompressAndVerify(method, level, task->dec_data.data(), task->usize, task->raw_win_buf.data(), task->csize, local_comp_buf) > 0) {
                 out_method = method;
                 out_level = level;
+                
                 std::unique_lock<std::shared_mutex> lock(cache_mutex);
+                // FIX: Double-check to prevent concurrent identical inserts
+                if (cache.find({method, level}) != cache.end()) return true;
+                
                 cache.insert({method, level});
                 return true;
             }

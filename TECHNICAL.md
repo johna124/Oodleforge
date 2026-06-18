@@ -137,33 +137,34 @@ Thread-local buffers to reduce memory pressure
 
 Changelog
 
-v33.1 (June 2026) - The Memory Beast
+OodleForge v33.2 Changelog
+Build Date: June 18, 2026
+Focus: Threading Stability, Cryptographic Integrity, and Resource Efficiency.
 
-In-Memory Output Buffer (64 MB) + Dedicated Physical Disk Worker Thread
-Background flush with true parallelization (lock.unlock() before disk write)
-Reduces HDD write operations from 4K+ to only ~16-17
-Main encode threads stay at full speed
-Byte-perfect tellp() for responsive UI
-Removed obsolete HDD/SSD pacing logic
+🛠 Critical Fixes (Backend)
+FastStreamWriter Thread-Safety:
+Implemented file_io_mtx to strictly serialize physical disk I/O, preventing file handle contention during multi-threaded heavy writes.
+Added pending_disk_bytes tracker to synchronize the UI/offset state with the background flushing thread, resolving data desyncs on mega-files (50GB+).
 
+AES Cryptographic Correction:
 
-v33.0 (June 2026) - Multi-Method Edition
+IV Initialization: Swapped malloc for calloc in AES_Context_Create. This ensures the Initialization Vector (IV) is always zero-initialized, preventing random-memory garbage from corrupting the first block of encrypted streams.
 
-Added full support for Kraken, Leviathan, Mermaid, Selkie
-Added -auto, -force, and multi-level options
-Major memory optimizations and improved pacing
-Enhanced UI with ETA and real-time stats
-Excellent compatibility under Wine (Linux)
+Key Length: Updated aes.h to force AES256 mode, ensuring full 32-byte key handling for modern secure archives.
 
-v32.x (May 2026)
+Scanner Cache (Performance Optimization):
 
-Initial AES support
-Basic encode/reconstruct functionality
-HDD pacing system introduced
+Added a "double-check" lock pattern in scan.cpp's TryMatchBlock. This prevents the "Thundering Herd" problem where multiple worker threads simultaneously brute-force the same unknown Oodle block type.
 
-v1.x (Early 2026)
+🚀 Portability & Build
+POSIX Compatibility: Sanitized LoadOodle() to remove Windows-specific .dll fallback logic on Linux/Unix systems, allowing clean liboo2core.so loading.
 
-Basic Kraken-only scanner and reconstructor
+Memory Management: Replaced GCC-specific packing attributes with standard #pragma pack for cross-compiler compatibility.
+
+📊 UI & Monitoring
+State Tracking: Fixed seekp implementation to ensure the background thread fully flushes before the file pointer moves, preventing data corruption during reconstruction.
+
+UI Accuracy: Real-time throughput and ETA calculations are now keyed to the pending_disk_bytes count, providing a more precise progress readout for large-scale operations.
 
 
 Known Limitations

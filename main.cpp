@@ -9,7 +9,7 @@ int main(int argc, char** argv) {
     if (argc >= 2) {
         std::string first_arg = argv[1];
         if (first_arg == "-V" || first_arg == "--version") {
-            std::cout << "OodleForge v33.1\n"
+            std::cout << "OodleForge v33.2\n"
                       << "Advanced Multi-Method Archive Extraction & Reconstruction\n"
                       << "Build Date: " << __DATE__ << " " << __TIME__ << "\n"
                       << "Architecture: "
@@ -25,7 +25,7 @@ int main(int argc, char** argv) {
 
     if (argc < 3) {
         std::cout << "=================================================================================\n"
-                  << "  OODLEFORGE [v33.1] - Advanced Multi-Method Archive Extraction & Reconstruction \n"
+                  << "  OODLEFORGE [v33.2] - Advanced Multi-Method Archive Extraction & Reconstruction \n"
                   << "==================================================================================\n"
                   << "USAGE: oodleforge <operation> <input_file> [output_file] [options]\n"
                   << "OPERATIONS:\n"

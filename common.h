@@ -138,8 +138,10 @@ public:
 };
 
 // ============================================================================
-// Data Structures
+// Data Structures (Cross-platform alignment)
 // ============================================================================
+#pragma pack(push, 1)
+
 struct PreHeader {
     uint32_t magic;
     uint32_t version;
@@ -147,11 +149,11 @@ struct PreHeader {
     uint32_t block_count;
     uint8_t use_aes;
     uint8_t aes_key[32];
-} __attribute__((packed));
+};
 
 struct BlockHeader {
     uint32_t stored_size;
-} __attribute__((packed));
+};
 
 struct PreBlock {
     uint64_t original_offset;
@@ -163,7 +165,9 @@ struct PreBlock {
     uint8_t was_encrypted;
     uint8_t reserved;
     uint32_t crc32;
-} __attribute__((packed));
+};
+
+#pragma pack(pop)
 
 struct BlockTask {
     uint64_t pos;
@@ -250,19 +254,23 @@ public:
 };
 
 // ============================================================================
-// Async Double-Buffered Disk Writer (Zero-Allocation Architecture)
+// Async Double-Buffered Disk Writer (Safe for Mega-files)
 // ============================================================================
 class FastStreamWriter {
     struct Impl {
         std::vector<uint8_t> active_buf;
         std::vector<uint8_t> flush_buf;
-        std::vector<uint8_t> disk_buf; // 3rd buffer for zero-alloc swapping!
-        size_t buffer_size = 64 * 1024 * 1024; // 64 MB Sweet Spot
+        std::vector<uint8_t> disk_buf; 
+        size_t buffer_size = 64 * 1024 * 1024; 
         
         uint64_t total_flushed = 0;
+        uint64_t pending_disk_bytes = 0; // Tracks bytes currently in disk_buf
+        
         std::ofstream file;
         std::thread flush_thread;
-        mutable std::mutex mtx;
+        
+        mutable std::mutex mtx; // Protects the buffers and state variables
+        std::mutex file_io_mtx; // NEW: Protects the physical file handle
         std::condition_variable cv;
         
         bool flush_ready = false;
@@ -286,6 +294,7 @@ class FastStreamWriter {
             flush_buf.clear();
             disk_buf.clear();
             total_flushed = 0;
+            pending_disk_bytes = 0;
 
             flush_thread = std::thread([this]() {
                 while (true) {
@@ -294,16 +303,25 @@ class FastStreamWriter {
 
                     if (!flush_buf.empty()) {
                         std::swap(disk_buf, flush_buf);
+                        pending_disk_bytes = disk_buf.size();
                         flush_ready = false;
                         cv.notify_all();
                         lock.unlock();
 
                         size_t chunk_size = disk_buf.size();
-                        file.write(reinterpret_cast<const char*>(disk_buf.data()), chunk_size);
+                        
+                        // Safe physical write
+                        {
+                            std::lock_guard<std::mutex> io_lock(file_io_mtx);
+                            file.write(reinterpret_cast<const char*>(disk_buf.data()), chunk_size);
+                        }
+
                         disk_buf.clear();
                         
                         lock.lock();
                         total_flushed += chunk_size;
+                        pending_disk_bytes = 0;
+                        cv.notify_all(); // Notify seekp that disk_buf is empty
                     } 
                     else if (stop_flush) {
                         break;
@@ -325,7 +343,13 @@ class FastStreamWriter {
                     cv.wait(lock, [this]() { return !flush_ready; });
                 }
                 lock.unlock();
-                file.write(data, len);
+                
+                // Safe physical write bypass
+                {
+                    std::lock_guard<std::mutex> io_lock(file_io_mtx);
+                    file.write(data, len);
+                }
+                
                 lock.lock();
                 total_flushed += len;
                 return;
@@ -354,7 +378,12 @@ class FastStreamWriter {
             }
 
             cv.wait(lock, [this]() { return !flush_ready; });
-            file.flush();
+            
+            // Safe physical flush
+            {
+                std::lock_guard<std::mutex> io_lock(file_io_mtx);
+                file.flush();
+            }
         }
 
         void close() {
@@ -372,7 +401,8 @@ class FastStreamWriter {
 
         uint64_t tellp() const {
             std::unique_lock<std::mutex> lock(mtx);
-            return total_flushed + active_buf.size() + flush_buf.size();
+            // Include pending_disk_bytes so the UI and offset trackers don't desync
+            return total_flushed + active_buf.size() + flush_buf.size() + pending_disk_bytes;
         }
 
         void seekp(uint64_t pos) {
@@ -384,8 +414,16 @@ class FastStreamWriter {
                 cv.notify_all();
                 cv.wait(lock, [this]() { return !flush_ready; });
             }
-            file.clear();
-            file.seekp(static_cast<std::streamoff>(pos));
+            
+            // Wait for background thread to fully drain the disk buffer
+            cv.wait(lock, [this]() { return pending_disk_bytes == 0; });
+            
+            // Safe physical seek
+            {
+                std::lock_guard<std::mutex> io_lock(file_io_mtx);
+                file.clear();
+                file.seekp(static_cast<std::streamoff>(pos));
+            }
         }
     };
 

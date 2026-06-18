@@ -8,7 +8,8 @@ namespace Logger {
 }
 
 void* AES_Context_Create(const uint8_t* key) {
-    AES_ctx* ctx = (AES_ctx*)malloc(sizeof(AES_ctx));
+    // FIX: calloc guarantees the memory (and thus the IV) is zero-initialized.
+    AES_ctx* ctx = (AES_ctx*)calloc(1, sizeof(AES_ctx));
     if (ctx) AES_init_ctx(ctx, key);
     return ctx;
 }
@@ -31,8 +32,8 @@ bool LoadOodle() {
     OodleLZ_Decompress = reinterpret_cast<OodleLZ_Decompress_t>(GetProcAddress(hModule, "OodleLZ_Decompress"));
     OodleLZ_Compress   = reinterpret_cast<OodleLZ_Compress_t>(GetProcAddress(hModule, "OodleLZ_Compress"));
 #else
-    void* hModule = dlopen("./oo2core_9_win64.dll", RTLD_NOW);
-    if (!hModule) hModule = dlopen("./liboo2core.so.9", RTLD_NOW);
+    // FIX: Removed Windows .dll fallback loop on POSIX systems.
+    void* hModule = dlopen("./liboo2core.so.9", RTLD_NOW);
     if (!hModule) hModule = dlopen("liboo2core.so.9", RTLD_NOW);
     if (!hModule) hModule = dlopen("liboo2core.so.8", RTLD_NOW);
     if (!hModule) return false;
@@ -329,3 +330,4 @@ void write_gap(ThreadSafeReader& reader, FastStreamWriter& writer, ObjectPool<ch
         writer.write(buf.data(), read); current_offset += read; remaining -= read;
     }
 }
+
