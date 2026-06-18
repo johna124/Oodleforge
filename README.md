@@ -73,6 +73,8 @@ oodleforge.exe r archive.oodle restored.bin
 
 ## Version History
 
+- v33.2 (June 2026) Threading Stability, Cryptographic Integrity, and Resource Efficiency.
+
 - v33.1 (June 2026) — The Memory Beast  
   Async Double-Buffered I/O + major performance improvements + pacing removed
 
