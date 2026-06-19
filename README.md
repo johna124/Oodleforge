@@ -90,7 +90,7 @@ oodleforge.exe r archive.oodle restored.bin
 ## Community
 
 Oodleforge thrives on collaboration.  
-The Memory Beast async I/O system was significantly improved thanks to idea of wrathma.
+The Memory Beast async I/O system was idea of wrathma.
 
 https://www.fileforums.com/showpost.php?p=510277&postcount=181
 
