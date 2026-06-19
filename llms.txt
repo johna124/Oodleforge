@@ -1,4 +1,4 @@
-# Oodleforge (v33.1) - The Memory Beast Edition
+# Oodleforge (v33.2) Threading Stability, Cryptographic Integrity, and Resource EfficiencyThe Memory Beast Edition
 An ultra-fast, highly optimized multi-threaded precompressor designed for byte-perfect extraction and reconstruction of OodleLZ game archives (Kraken, Leviathan, Mermaid, Selkie).
 
 ## Technical Architecture & Constraints
