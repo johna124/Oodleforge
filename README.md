@@ -1,7 +1,7 @@
 <img src="https://github.com/johna124/Oodleforge/blob/main/banner2.jpg" width="600" alt="Oodleforge - The Kraken Slayer">
 
 # Oodleforge — The Kraken Slayer
-**Advanced OodleLZ Archive Engine | v33.2 Threading Stability, Cryptographic Integrity, and Resource Efficiency.**
+**Advanced OodleLZ Archive Engine | v33.3 Engine-Specific Compatibility, Expanded Method Support & Scanner Robustness.**
 
 *Exact Reconstruction • AES-256 • Multi-Method Oodle • Async Memory Beast I/O*
 
