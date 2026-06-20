@@ -1,4 +1,5 @@
 #pragma once
+
 #include <iostream>
 #include <vector>
 #include <string>
@@ -25,13 +26,26 @@
 #include <condition_variable>
 
 #ifdef _WIN32
-#include <windows.h>
+    #include <windows.h>
 #else
-#include <unistd.h>
-#include <sys/stat.h>
-#include <fcntl.h>
-#include <dlfcn.h>
+    #include <unistd.h>
+    #include <sys/stat.h>
+    #include <fcntl.h>
+    #include <dlfcn.h>
 #endif
+
+// ============================================================================
+// Oodle Compression Options (Crucial for Frostbite & The Crew 2)
+// ============================================================================
+struct OodleLZ_CompressOptions {
+    uint32_t verbosity;
+    uint32_t spaceSpeedTradeoffBytes; // Required for Frostbite exact matches
+    uint32_t unused;
+    uint32_t sendQuantumCRCs;         // Required for The Crew 2
+    uint32_t crcPolicy;
+    uint32_t tryHarder;
+    uint32_t reserved[10];            // Padding for DLL compatibility
+};
 
 // ============================================================================
 // Global Configuration & Constants
@@ -40,15 +54,24 @@ namespace Config {
     constexpr size_t WIN_SIZE_LARGE = 128 * 1024 * 1024;
     constexpr size_t WIN_SIZE_SMALL = 64 * 1024 * 1024;
     constexpr size_t GAP_POOL_CHUNK = 16 * 1024 * 1024;
+
     constexpr uint32_t TEST_USIZES[] = {65536, 131072, 262144};
-    constexpr int32_t ALL_METHODS[] = {8, 9, 11, 12};
+    constexpr int32_t ALL_METHODS[] = {8, 9, 11, 12, 13}; // Added Hydra (13)
     constexpr int32_t ALL_LEVELS[] = {1, 2, 3, 4, 5, 6, 7, 8, 9};
     constexpr size_t MAX_SAFE_COMPRESSED_SIZE = 100 * 1024 * 1024;
+
+    // All 5 Oodle Magic Bytes
+    constexpr uint8_t MAGIC_KRAKEN    = 0x8C;
+    constexpr uint8_t MAGIC_LEVIATHAN = 0xCC;
+    constexpr uint8_t MAGIC_MERMAID   = 0x4C;
+    constexpr uint8_t MAGIC_SELKIE    = 0x2C;
+    constexpr uint8_t MAGIC_HYDRA     = 0x6C;
 }
 
 // ============================================================================
 // Oodle Definitions (Global Function Pointers)
 // ============================================================================
+// FIX: Added the '*' to make these actual pointer types, and fixed 'const void*'
 typedef int64_t (*OodleLZ_Decompress_t)(
     const void* src, int64_t srcLen, void* dst, int64_t dstLen,
     int32_t fuzzSafe, int32_t checkCRC, int32_t verbosity,
@@ -65,8 +88,9 @@ extern OodleLZ_Decompress_t OodleLZ_Decompress;
 extern OodleLZ_Compress_t   OodleLZ_Compress;
 bool LoadOodle();
 
-constexpr uint8_t MAGIC_8C = 0x8C;
-constexpr uint8_t MAGIC_CC = 0xCC;
+// Legacy aliases for backward compatibility with existing code
+constexpr uint8_t MAGIC_8C = Config::MAGIC_KRAKEN;
+constexpr uint8_t MAGIC_CC = Config::MAGIC_LEVIATHAN;
 
 // ============================================================================
 // Lightweight Debug Logger
@@ -112,14 +136,8 @@ using AESContextPtr = std::unique_ptr<void, AESContextDeleter>;
 // Enums & Error Handling
 // ============================================================================
 enum class ErrorCode {
-    SUCCESS = 0,
-    ERR_FILE_NOT_FOUND = 1,
-    ERR_INVALID_MAGIC = 2,
-    ERR_CRC_MISMATCH = 3,
-    ERR_COMPRESSION_FAILED = 4,
-    ERR_INVALID_ARGUMENT = 5,
-    ERR_BUFFER_OVERFLOW = 6,
-    ERR_UNKNOWN = 255
+    SUCCESS = 0, ERR_FILE_NOT_FOUND = 1, ERR_INVALID_MAGIC = 2, ERR_CRC_MISMATCH = 3,
+    ERR_COMPRESSION_FAILED = 4, ERR_INVALID_ARGUMENT = 5, ERR_BUFFER_OVERFLOW = 6, ERR_UNKNOWN = 255
 };
 
 template <typename T>
@@ -141,7 +159,6 @@ public:
 // Data Structures (Cross-platform alignment)
 // ============================================================================
 #pragma pack(push, 1)
-
 struct PreHeader {
     uint32_t magic;
     uint32_t version;
@@ -166,7 +183,6 @@ struct PreBlock {
     uint8_t reserved;
     uint32_t crc32;
 };
-
 #pragma pack(pop)
 
 struct BlockTask {
@@ -199,6 +215,7 @@ struct ScanStats {
     uint32_t fails_unidentified = 0;
     std::map<int32_t, uint32_t> method_counts;
     std::map<int32_t, uint32_t> level_counts;
+    
     void add_match(int32_t m, int32_t l) {
         matches_identified++;
         method_counts[m]++;
@@ -222,10 +239,15 @@ public:
     struct Handle {
         std::shared_ptr<std::vector<T>> ptr;
         ObjectPool* pool;
+
         Handle(std::shared_ptr<std::vector<T>> p, ObjectPool* pl) : ptr(p), pool(pl) {}
         ~Handle() { if(ptr && pool) pool->release(ptr); }
+        
         Handle(Handle&& o) noexcept : ptr(o.ptr), pool(o.pool) { o.ptr = nullptr; o.pool = nullptr; }
-        Handle& operator=(Handle&& o) noexcept { ptr = o.ptr; pool = o.pool; o.ptr = nullptr; o.pool = nullptr; return *this; }
+        Handle& operator=(Handle&& o) noexcept { 
+            ptr = o.ptr; pool = o.pool; o.ptr = nullptr; o.pool = nullptr; return *this; 
+        }
+        
         std::vector<T>& get() { return *ptr; }
     };
 
@@ -253,24 +275,20 @@ public:
     size_t pread(char* dest, size_t count, uint64_t offset) const;
 };
 
-// ============================================================================
-// Async Double-Buffered Disk Writer (Safe for Mega-files)
-// ============================================================================
 class FastStreamWriter {
     struct Impl {
         std::vector<uint8_t> active_buf;
         std::vector<uint8_t> flush_buf;
-        std::vector<uint8_t> disk_buf; 
-        size_t buffer_size = 64 * 1024 * 1024; 
-        
+        std::vector<uint8_t> disk_buf;
+        size_t buffer_size = 64 * 1024 * 1024;
         uint64_t total_flushed = 0;
-        uint64_t pending_disk_bytes = 0; // Tracks bytes currently in disk_buf
+        uint64_t pending_disk_bytes = 0; 
         
         std::ofstream file;
         std::thread flush_thread;
         
-        mutable std::mutex mtx; // Protects the buffers and state variables
-        std::mutex file_io_mtx; // NEW: Protects the physical file handle
+        mutable std::mutex mtx; 
+        std::mutex file_io_mtx; 
         std::condition_variable cv;
         
         bool flush_ready = false;
@@ -310,7 +328,6 @@ class FastStreamWriter {
 
                         size_t chunk_size = disk_buf.size();
                         
-                        // Safe physical write
                         {
                             std::lock_guard<std::mutex> io_lock(file_io_mtx);
                             file.write(reinterpret_cast<const char*>(disk_buf.data()), chunk_size);
@@ -321,9 +338,8 @@ class FastStreamWriter {
                         lock.lock();
                         total_flushed += chunk_size;
                         pending_disk_bytes = 0;
-                        cv.notify_all(); // Notify seekp that disk_buf is empty
-                    } 
-                    else if (stop_flush) {
+                        cv.notify_all(); 
+                    } else if (stop_flush) {
                         break;
                     }
                 }
@@ -344,7 +360,6 @@ class FastStreamWriter {
                 }
                 lock.unlock();
                 
-                // Safe physical write bypass
                 {
                     std::lock_guard<std::mutex> io_lock(file_io_mtx);
                     file.write(data, len);
@@ -379,7 +394,6 @@ class FastStreamWriter {
 
             cv.wait(lock, [this]() { return !flush_ready; });
             
-            // Safe physical flush
             {
                 std::lock_guard<std::mutex> io_lock(file_io_mtx);
                 file.flush();
@@ -401,7 +415,6 @@ class FastStreamWriter {
 
         uint64_t tellp() const {
             std::unique_lock<std::mutex> lock(mtx);
-            // Include pending_disk_bytes so the UI and offset trackers don't desync
             return total_flushed + active_buf.size() + flush_buf.size() + pending_disk_bytes;
         }
 
@@ -415,10 +428,8 @@ class FastStreamWriter {
                 cv.wait(lock, [this]() { return !flush_ready; });
             }
             
-            // Wait for background thread to fully drain the disk buffer
             cv.wait(lock, [this]() { return pending_disk_bytes == 0; });
             
-            // Safe physical seek
             {
                 std::lock_guard<std::mutex> io_lock(file_io_mtx);
                 file.clear();
@@ -428,17 +439,15 @@ class FastStreamWriter {
     };
 
     std::unique_ptr<Impl> pImpl_;
-
 public:
     FastStreamWriter() : pImpl_(std::make_unique<Impl>()) {}
     ~FastStreamWriter() { pImpl_->close(); }
-
     bool open(const std::string& path, size_t size = 0) { return pImpl_->open(path, size); }
     void write(const char* data, size_t len) { pImpl_->write(data, len); }
     void flush() { pImpl_->flush(); }
     uint64_t tellp() const { return pImpl_->tellp(); }
     void seekp(uint64_t pos) { pImpl_->seekp(pos); }
-    
+
     size_t get_buffer_size() const { return pImpl_->buffer_size; }
     size_t get_write_pos() const { return pImpl_->active_buf.size(); }
 };
@@ -454,9 +463,11 @@ class BlockScanner {
     AESContextPtr aes_ctx_;
     uint64_t win_start_ = 0;
     size_t win_len_ = 0;
+    
     bool ensure_window(uint64_t pos, size_t needed);
     bool find_next_magic(uint64_t& pos, uint64_t limit);
     std::shared_ptr<BlockTask> extract_block(uint64_t pos, uint32_t usize, uint32_t csize, bool is_encrypted);
+
 public:
     BlockScanner(ThreadSafeReader& reader, uint64_t file_size, bool use_aes, const std::vector<uint8_t>& aes_key, size_t win_size);
     ~BlockScanner();
@@ -470,10 +481,12 @@ class ThreadPool {
     std::condition_variable condition;
     bool stop;
     void shutdown();
+
 public:
     ThreadPool(size_t threads);
     ~ThreadPool();
-    template<class F>
+
+    template <class F>
     std::future<typename std::invoke_result<F>::type> enqueue(F&& f) {
         using return_type = typename std::invoke_result<F>::type;
         auto task_ptr = std::make_shared<std::packaged_task<return_type()>>(std::forward<F>(f));
@@ -496,6 +509,7 @@ class UI {
     std::mutex log_mutex;
     std::atomic<uint32_t> matches{0};
     std::atomic<uint32_t> fails{0};
+
 public:
     UI(uint64_t sz, uint32_t blks, bool v);
     void log(const std::string& message);
@@ -514,8 +528,20 @@ std::vector<int32_t> ParseMethods(const std::string& input);
 std::vector<int32_t> ParseLevels(const std::string& input);
 std::vector<uint8_t> ParseKey(const std::string& hex);
 void ResolveAESKey(std::vector<uint8_t>& aesKey, bool& useAES, const PreHeader& hdr);
-int64_t CompressAndVerify(int32_t method, int32_t level, const uint8_t* src, uint32_t usize, const uint8_t* expected, uint32_t expected_size, std::vector<uint8_t>& temp_buf);
 
-Result<int> RunScan(const std::string& input_path, bool verbose, int num_threads, const std::vector<int32_t>& m_ids, const std::vector<uint8_t>& aesKey, bool useAES, double scan_percent, bool debug_mode);
-Result<int> RunEncode(const std::string& input_path, const std::string& output_path, bool verbose, int num_threads, const std::vector<int32_t>& m_ids, const std::vector<int32_t>& opt_levels, bool opt_auto, bool opt_force, const std::vector<uint8_t>& aesKey, bool useAES);
-Result<int> RunReconstruct(const std::string& input_path, const std::string& output_path, bool verbose, int num_threads, std::vector<uint8_t>& aesKey, bool& useAES);
+// FIX: Added 'opts' parameter to CompressAndVerify
+int64_t CompressAndVerify(int32_t method, int32_t level, const uint8_t* src, uint32_t usize, 
+                          const uint8_t* expected, uint32_t expected_size, std::vector<uint8_t>& temp_buf, 
+                          const OodleLZ_CompressOptions* opts = nullptr);
+
+// FIX: Added 'tradeoff_bytes' and 'quantum_crc' to match main.cpp
+Result<int> RunScan(const std::string& input_path, bool verbose, int num_threads, const std::vector<int32_t>& m_ids, 
+                    const std::vector<uint8_t>& aesKey, bool useAES, double scan_percent, bool debug_mode,
+                    uint32_t tradeoff_bytes, bool quantum_crc);
+
+Result<int> RunEncode(const std::string& input_path, const std::string& output_path, bool verbose, int num_threads, 
+                      const std::vector<int32_t>& m_ids, const std::vector<int32_t>& opt_levels, bool opt_auto, bool opt_force, 
+                      const std::vector<uint8_t>& aesKey, bool useAES, uint32_t tradeoff_bytes, bool quantum_crc);
+
+Result<int> RunReconstruct(const std::string& input_path, const std::string& output_path, bool verbose, int num_threads, 
+                           std::vector<uint8_t>& aesKey, bool& useAES, uint32_t tradeoff_bytes, bool quantum_crc);

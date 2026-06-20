@@ -1,3 +1,32 @@
+OodleForge v33.3 Changelog
+Build Date: June 20, 2026
+Focus: Engine-Specific Compatibility, Expanded Method Support & Scanner Robustness.
+
+Major Features & Improvements
+
+• Added full Hydra (13) support
+  - Included in ALL_METHODS, magic byte detection, method parser, and compression pipeline
+  - All five Oodle magic bytes now supported (0x8C, 0xCC, 0x4C, 0x2C, 0x6C)
+
+• Engine-Specific Options (Critical for exact reconstruction) -EXPERIMENTAL DUE HARDWARE LIMITATIONS-
+  - `-tradeoff <n>` : Sets spaceSpeedTradeoffBytes (essential for Frostbite games)
+  - `-quantumcrc`   : Enables sendQuantumCRCs (required for The Crew 2 and similar titles)
+
+• Scanner Enhancements
+  - Upgraded BlockScanner to check all 5 magic bytes
+  - Improved recovery logic after failed block detection
+  - Better cache handling in TryMatchBlock with shared_mutex protection
+  - Enhanced statistics output (method & level distribution)
+
+• Compression Pipeline Fixes
+  - CompressAndVerify now properly passes OodleLZ_CompressOptions*
+  - Fixed option propagation in RunScan, RunEncode, and reconstruction paths
+
+• CLI & Usability
+  - Updated help text with new options and examples
+  - scan command now properly integrated with new parameters
+  - Version string bumped to v33.3
+
 OodleForge v33.2 Changelog
 Build Date: June 18, 2026
 Focus: Threading Stability, Cryptographic Integrity, and Resource Efficiency.

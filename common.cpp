@@ -8,19 +8,22 @@ namespace Logger {
 }
 
 void* AES_Context_Create(const uint8_t* key) {
-    // FIX: calloc guarantees the memory (and thus the IV) is zero-initialized.
     AES_ctx* ctx = (AES_ctx*)calloc(1, sizeof(AES_ctx));
     if (ctx) AES_init_ctx(ctx, key);
     return ctx;
 }
+
 void AES_Context_Destroy(void* ctx) { if (ctx) free(ctx); }
+
 void AES_Context_Decrypt(void* ctx, uint8_t* buf, uint32_t len) {
     if (ctx && buf && len > 0) AES_CBC_decrypt_buffer((AES_ctx*)ctx, buf, len);
 }
+
 void AES_Context_Encrypt(void* ctx, uint8_t* buf, uint32_t len) {
     if (ctx && buf && len > 0) AES_CBC_encrypt_buffer((AES_ctx*)ctx, buf, len);
 }
 
+// Now these correctly initialize as pointers!
 OodleLZ_Decompress_t OodleLZ_Decompress = nullptr;
 OodleLZ_Compress_t   OodleLZ_Compress   = nullptr;
 
@@ -29,24 +32,28 @@ bool LoadOodle() {
     HMODULE hModule = LoadLibraryA("oo2core_9_win64.dll");
     if (!hModule) hModule = LoadLibraryA("oo2core_8_win64.dll");
     if (!hModule) return false;
+
     OodleLZ_Decompress = reinterpret_cast<OodleLZ_Decompress_t>(GetProcAddress(hModule, "OodleLZ_Decompress"));
     OodleLZ_Compress   = reinterpret_cast<OodleLZ_Compress_t>(GetProcAddress(hModule, "OodleLZ_Compress"));
 #else
-    // FIX: Removed Windows .dll fallback loop on POSIX systems.
     void* hModule = dlopen("./liboo2core.so.9", RTLD_NOW);
     if (!hModule) hModule = dlopen("liboo2core.so.9", RTLD_NOW);
     if (!hModule) hModule = dlopen("liboo2core.so.8", RTLD_NOW);
     if (!hModule) return false;
+
     OodleLZ_Decompress = reinterpret_cast<OodleLZ_Decompress_t>(dlsym(hModule, "OodleLZ_Decompress"));
     OodleLZ_Compress   = reinterpret_cast<OodleLZ_Compress_t>(dlsym(hModule, "OodleLZ_Compress"));
 #endif
     return (OodleLZ_Decompress != nullptr && OodleLZ_Compress != nullptr);
 }
 
+// FIX: Added 'opts' parameter and passed it to OodleLZ_Compress
 int64_t CompressAndVerify(int32_t method, int32_t level, const uint8_t* src, uint32_t usize,
-                          const uint8_t* expected, uint32_t expected_size, std::vector<uint8_t>& temp_buf) {
+                          const uint8_t* expected, uint32_t expected_size, std::vector<uint8_t>& temp_buf, 
+                          const OodleLZ_CompressOptions* opts) {
     if (temp_buf.size() < usize * 2 + 4096) temp_buf.resize(usize * 2 + 4096);
-    int64_t res = OodleLZ_Compress(method, src, usize, temp_buf.data(), level, nullptr, nullptr, nullptr, 0);
+    
+    int64_t res = OodleLZ_Compress(method, src, usize, temp_buf.data(), level, (void*)opts, nullptr, nullptr, 0);
     if (res > 0 && res == static_cast<int64_t>(expected_size)) {
         if (std::memcmp(expected, temp_buf.data(), expected_size) == 0) return res;
     }
@@ -60,7 +67,6 @@ struct ThreadSafeReader::Impl {
 #else
     int fd_ = -1;
 #endif
-
     Impl(const std::string& path) : path_(path) {
 #ifdef _WIN32
         hFile = CreateFileA(path.c_str(), GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
@@ -93,7 +99,9 @@ struct ThreadSafeReader::Impl {
         size_t total_read = 0;
         while (total_read < count) {
 #ifdef _WIN32
-            OVERLAPPED ol = {0}; ol.Offset = static_cast<DWORD>(offset + total_read); ol.OffsetHigh = static_cast<DWORD>((offset + total_read) >> 32);
+            OVERLAPPED ol = {0}; 
+            ol.Offset = static_cast<DWORD>(offset + total_read); 
+            ol.OffsetHigh = static_cast<DWORD>((offset + total_read) >> 32);
             DWORD bytes_read = 0;
             BOOL success = ReadFile(hFile, dest + total_read, static_cast<DWORD>(count - total_read), &bytes_read, &ol);
             if (!success) {
@@ -129,6 +137,7 @@ BlockScanner::BlockScanner(ThreadSafeReader& reader, uint64_t file_size, bool us
         aes_ctx_ = AESContextPtr(AES_Context_Create(aes_key_.data()));
     }
 }
+
 BlockScanner::~BlockScanner() = default;
 
 bool BlockScanner::ensure_window(uint64_t pos, size_t needed) {
@@ -138,9 +147,11 @@ bool BlockScanner::ensure_window(uint64_t pos, size_t needed) {
             size_t keep = static_cast<size_t>((win_start_ + win_len_) - aligned_pos);
             std::memmove(win_buf_.get(), &win_buf_[aligned_pos - win_start_], keep);
             if (use_aes_) std::memmove(win_buf_dec_.get(), &win_buf_dec_[aligned_pos - win_start_], keep);
+            
             win_start_ = aligned_pos;
             size_t bytes_to_read = win_size_ - keep;
             size_t read_bytes = reader_.pread(reinterpret_cast<char*>(&win_buf_[keep]), bytes_to_read, win_start_ + keep);
+            
             if (use_aes_ && read_bytes > 0) {
                 size_t aes_len = (read_bytes + 15) & ~15;
                 std::memcpy(&win_buf_dec_[keep], &win_buf_[keep], read_bytes);
@@ -161,17 +172,32 @@ bool BlockScanner::ensure_window(uint64_t pos, size_t needed) {
     return win_len_ > 0;
 }
 
+// FIX: Upgraded scanner to check ALL 5 Oodle Magic Bytes!
 bool BlockScanner::find_next_magic(uint64_t& pos, uint64_t limit) {
     while (pos < limit && pos < file_size_ - 16) {
         if (!ensure_window(pos, 16)) return false;
         size_t internal_idx = static_cast<size_t>(pos - win_start_);
         size_t max_check = std::min(win_len_ - internal_idx, static_cast<size_t>(file_size_ - 16 - pos));
         if (max_check == 0) { pos++; continue; }
+
         const uint8_t* search_start = use_aes_ ? &win_buf_dec_[internal_idx] : &win_buf_[internal_idx];
-        const uint8_t* found_8c = static_cast<const uint8_t*>(std::memchr(search_start, MAGIC_8C, max_check));
-        const uint8_t* found_cc = static_cast<const uint8_t*>(std::memchr(search_start, MAGIC_CC, max_check));
-        size_t shift = std::min(found_8c ? static_cast<size_t>(found_8c - search_start) : max_check, found_cc ? static_cast<size_t>(found_cc - search_start) : max_check);
-        if (shift < max_check) { pos += shift; return true; }
+        size_t min_shift = max_check;
+
+        auto check_magic = [&](uint8_t magic) {
+            const uint8_t* f = static_cast<const uint8_t*>(std::memchr(search_start, magic, max_check));
+            if (f) {
+                size_t shift = static_cast<size_t>(f - search_start);
+                if (shift < min_shift) min_shift = shift;
+            }
+        };
+
+        check_magic(Config::MAGIC_KRAKEN);
+        check_magic(Config::MAGIC_LEVIATHAN);
+        check_magic(Config::MAGIC_MERMAID);
+        check_magic(Config::MAGIC_SELKIE);
+        check_magic(Config::MAGIC_HYDRA);
+
+        if (min_shift < max_check) { pos += min_shift; return true; }
         pos += max_check;
     }
     return false;
@@ -179,12 +205,21 @@ bool BlockScanner::find_next_magic(uint64_t& pos, uint64_t limit) {
 
 std::shared_ptr<BlockTask> BlockScanner::extract_block(uint64_t pos, uint32_t usize, uint32_t csize, bool is_encrypted) {
     if (!ensure_window(pos, csize)) return nullptr;
-    bool actual_encrypted = use_aes_ && is_encrypted && (win_buf_dec_[pos - win_start_] == MAGIC_8C || win_buf_dec_[pos - win_start_] == MAGIC_CC);
+    
+    uint8_t curr_magic = use_aes_ ? win_buf_dec_[pos - win_start_] : win_buf_[pos - win_start_];
+    bool actual_encrypted = use_aes_ && is_encrypted && (
+        curr_magic == Config::MAGIC_KRAKEN || curr_magic == Config::MAGIC_LEVIATHAN || 
+        curr_magic == Config::MAGIC_MERMAID || curr_magic == Config::MAGIC_SELKIE || 
+        curr_magic == Config::MAGIC_HYDRA
+    );
+    
     uint8_t* active_buf = (use_aes_ && actual_encrypted) ? win_buf_dec_.get() : win_buf_.get();
+    
     std::vector<uint8_t> dec_buf(usize);
     if (OodleLZ_Decompress(&active_buf[pos - win_start_], csize, dec_buf.data(), usize, 0, 0, 0, nullptr, 0, nullptr, nullptr, nullptr, 0, 0, 0) != static_cast<int64_t>(usize)) {
         return nullptr;
     }
+
     auto task = std::make_shared<BlockTask>();
     task->pos = pos; task->usize = usize; task->csize = csize; task->is_encrypted = actual_encrypted;
     task->raw_win_buf.assign(&active_buf[pos - win_start_], &active_buf[pos - win_start_] + csize);
@@ -207,17 +242,28 @@ std::shared_ptr<BlockTask> BlockScanner::extract_next_block(uint64_t& pos, uint6
     while (pos < limit && pos < file_size_ - 16) {
         if (!find_next_magic(pos, limit)) break;
         if (!ensure_window(pos, 512 * 1024)) break;
+        
         size_t available = (win_start_ + win_len_ > pos) ? static_cast<size_t>(win_start_ + win_len_ - pos) : 0;
         size_t pass_size = std::min(available, static_cast<size_t>(file_size_ - pos));
-        bool is_curr_enc = use_aes_ && (win_buf_dec_[pos - win_start_] == MAGIC_8C || win_buf_dec_[pos - win_start_] == MAGIC_CC);
+        
+        uint8_t curr_magic = use_aes_ ? win_buf_dec_[pos - win_start_] : win_buf_[pos - win_start_];
+        bool is_curr_enc = use_aes_ && (
+            curr_magic == Config::MAGIC_KRAKEN || curr_magic == Config::MAGIC_LEVIATHAN || 
+            curr_magic == Config::MAGIC_MERMAID || curr_magic == Config::MAGIC_SELKIE || 
+            curr_magic == Config::MAGIC_HYDRA
+        );
+        
         uint8_t* active_buf = (use_aes_ && is_curr_enc) ? win_buf_dec_.get() : win_buf_.get();
+        
         std::vector<uint8_t> dec_buf(256 * 1024);
         uint32_t found_usize = 0, found_csize = 0;
+
         for (uint32_t usize : test_sizes) {
             if (OodleLZ_Decompress(&active_buf[pos - win_start_], pass_size, dec_buf.data(), usize, 0, 0, 0, nullptr, 0, nullptr, nullptr, nullptr, 0, 0, 0) == static_cast<int64_t>(usize)) {
                 uint32_t max_needed = static_cast<uint32_t>(std::min(static_cast<uint64_t>(usize * 2), file_size_ - pos));
                 ensure_window(pos, max_needed);
                 active_buf = (use_aes_ && is_curr_enc) ? win_buf_dec_.get() : win_buf_.get();
+                
                 found_csize = FindCompressedSize(&active_buf[pos - win_start_], max_needed, usize, dec_buf.data());
                 if (found_csize > 0 && found_csize < usize && found_csize >= 16) {
                     found_usize = usize; break;
@@ -225,6 +271,7 @@ std::shared_ptr<BlockTask> BlockScanner::extract_next_block(uint64_t& pos, uint6
                 found_csize = 0;
             }
         }
+
         if (found_csize > 0) {
             auto task = extract_block(pos, found_usize, found_csize, is_curr_enc);
             if (task) { pos += found_csize; return task; }
@@ -250,28 +297,47 @@ ThreadPool::ThreadPool(size_t threads) : stop(false) {
         });
     }
 }
-void ThreadPool::shutdown() { { std::unique_lock<std::mutex> lock(queue_mutex); if (stop) return; stop = true; } condition.notify_all(); for (std::thread& worker : workers) if (worker.joinable()) worker.join(); }
+
+void ThreadPool::shutdown() { 
+    { std::unique_lock<std::mutex> lock(queue_mutex); if (stop) return; stop = true; } 
+    condition.notify_all(); 
+    for (std::thread& worker : workers) if (worker.joinable()) worker.join(); 
+}
+
 ThreadPool::~ThreadPool() { shutdown(); }
 
 UI::UI(uint64_t sz, uint32_t blks, bool v) : total_size(sz), total_blocks(blks), verbose(v) { start_time = std::chrono::steady_clock::now(); }
 void UI::log(const std::string& message) { if (!verbose) return; std::lock_guard<std::mutex> lock(log_mutex); std::cout << "[VERBOSE] " << message << "\n"; }
 void UI::set_stats(uint32_t m, uint32_t f) { matches = m; fails = f; }
+
 std::string UI::format_time(double total_seconds) {
-    int h = static_cast<int>(total_seconds) / 3600; int m = (static_cast<int>(total_seconds) % 3600) / 60; int s = static_cast<int>(total_seconds) % 60;
-    std::ostringstream oss; oss << std::setfill('0') << std::setw(2) << h << ":" << std::setfill('0') << std::setw(2) << m << ":" << std::setfill('0') << std::setw(2) << s; return oss.str();
+    int h = static_cast<int>(total_seconds) / 3600; 
+    int m = (static_cast<int>(total_seconds) % 3600) / 60; 
+    int s = static_cast<int>(total_seconds) % 60;
+    std::ostringstream oss; 
+    oss << std::setfill('0') << std::setw(2) << h << ":" << std::setfill('0') << std::setw(2) << m << ":" << std::setfill('0') << std::setw(2) << s; 
+    return oss.str();
 }
+
 void UI::update(uint64_t current_pos, uint32_t current_block, const char* label, uint64_t out_size) {
-    if (verbose) return; auto now = std::chrono::steady_clock::now(); double elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - start_time).count() / 1000.0;
-    double progress = total_size > 0 ? static_cast<double>(current_pos) / static_cast<double>(total_size) : 0.0; if (progress > 1.0) progress = 1.0;
-    double eta = (progress > 0.0001) ? (elapsed / progress) - elapsed : 0; double mbps = (current_pos / 1024.0 / 1024.0) / (elapsed + 0.001);
+    if (verbose) return; 
+    auto now = std::chrono::steady_clock::now(); 
+    double elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - start_time).count() / 1000.0;
+    double progress = total_size > 0 ? static_cast<double>(current_pos) / static_cast<double>(total_size) : 0.0; 
+    if (progress > 1.0) progress = 1.0;
+    double eta = (progress > 0.0001) ? (elapsed / progress) - elapsed : 0; 
+    double mbps = (current_pos / 1024.0 / 1024.0) / (elapsed + 0.001);
+    
     std::cout << "\r\033[K" << label << " [" << std::fixed << std::setprecision(2) << progress * 100.0 << "%] "
               << "Blk: " << current_block << (total_blocks > 0 ? "/" + std::to_string(total_blocks) : "")
               << " [E:" << matches << " F:" << fails << "]" << " | " << std::setprecision(2) << mbps << " MB/s"
               << " | Time: " << format_time(elapsed) << " | ETA: " << format_time(eta)
               << " | Size: " << std::fixed << std::setprecision(2) << (out_size / 1048576.0) << " MB" << std::flush;
 }
+
 double UI::get_elapsed() { return std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start_time).count() / 1000.0; }
 
+// FIX: Added Hydra (13) to parser
 std::vector<int32_t> ParseMethods(const std::string& input) {
     std::vector<int32_t> ids; std::stringstream ss(input); std::string token;
     while (std::getline(ss, token, '+')) {
@@ -280,17 +346,21 @@ std::vector<int32_t> ParseMethods(const std::string& input) {
         else if (token == "leviathan" || token == "9") ids.push_back(9);
         else if (token == "mermaid" || token == "11") ids.push_back(11);
         else if (token == "selkie" || token == "12") ids.push_back(12);
+        else if (token == "hydra" || token == "13") ids.push_back(13);
     }
     if (ids.empty()) ids.push_back(8); return ids;
 }
+
 std::vector<int32_t> ParseLevels(const std::string& input) {
     std::vector<int32_t> levels; std::stringstream ss(input); std::string token;
     while (std::getline(ss, token, '+')) { try { levels.push_back(std::stoi(token)); } catch (...) {} } return levels;
 }
+
 std::vector<uint8_t> ParseKey(const std::string& hex) {
     std::vector<uint8_t> key(32, 0);
     if (hex.length() == 64) { for (size_t i = 0; i < 64; i += 2) key[i / 2] = static_cast<uint8_t>(std::stoul(hex.substr(i, 2), nullptr, 16)); } return key;
 }
+
 void ResolveAESKey(std::vector<uint8_t>& aesKey, bool& useAES, const PreHeader& hdr) {
     if (hdr.use_aes && !useAES) { aesKey.assign(hdr.aes_key, hdr.aes_key + 32); useAES = true; }
 }
@@ -330,4 +400,3 @@ void write_gap(ThreadSafeReader& reader, FastStreamWriter& writer, ObjectPool<ch
         writer.write(buf.data(), read); current_offset += read; remaining -= read;
     }
 }
-
