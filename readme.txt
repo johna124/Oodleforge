@@ -147,7 +147,7 @@ Happy Kraken Hunting!
 ================================================================================
 
 Made with blood, sweat, and too much coffee.
-Version 33.1 - The Memory Beast Edition
+Version 33.3 - Engine-Specific Compatibility, Expanded Method Support & Scanner Robustness.
 
 NOTE:
 This project is designed for GCC/Clang (Linux/MinGW). Visual Studio

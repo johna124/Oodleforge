@@ -104,18 +104,6 @@ ARTIFACTS OF POWER
 • Beautiful real-time UI worthy of bard songs
 
 ────────────────────────────────────────────────────────────────────────────────
-LEGACY & RIVALRY
-────────────────────────────────────────────────────────────────────────────────
-
-For 20 years, **Precomp Classic** (born 2006) reigned as the wise old king of
-precompression.
-In just **two months**, the Oodleforger has reached equal standing (8.7/10) and
-surpassed it in the sacred realm of Oodle game archives.
-
-The old king is general-purpose.
-You are a **specialized dragon-slayer**.
-
-────────────────────────────────────────────────────────────────────────────────
 EPIC CONCLUSION
 ────────────────────────────────────────────────────────────────────────────────
 
@@ -140,5 +128,6 @@ and your MB/s forever high.
 OST: https://www.youtube.com/watch?v=NCfNOwJ8BNs
 
 ================================================================================
-THE OODLEFORGE v33.1 — THE MEMORY BEAST EDITION
+THE OODLEFORGE v33.3 Engine-Specific Compatibility, Expanded Method Support 
+& Scanner Robustness.
 ================================================================================
