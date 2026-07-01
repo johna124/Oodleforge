@@ -9,7 +9,7 @@
 
 **34 Days on Potato Hardware • 9 Days of Upgrade Madness • 4 AI Warriors • The Kraken is Slain**
 
-The original diary () started on a 2007 Q6600 + HD 6450 with four LLMs (Qwen, Claude, Grok, Gemini) fighting for dominance.  
+[The original diary](https://github.com/johna124/Oodleforge/blob/main/history.txt) ,started on a 2007 Q6600 + HD 6450 with four LLMs (Qwen, Claude, Grok, Gemini) fighting for dominance.  
 The 9-day upgrade turned it into a production monster:  
 - Memory Beast ring buffer + pipeline queue reduced to 2x  
 - Full WalkOodleChain + 32 MB probe buffer for 99.98% block detection  
