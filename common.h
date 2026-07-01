@@ -24,82 +24,89 @@
 #include <stdexcept>
 #include <filesystem>
 #include <condition_variable>
+#include <deque>
 
 #ifdef _WIN32
-    #include <windows.h>
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
 #else
-    #include <unistd.h>
-    #include <sys/stat.h>
-    #include <fcntl.h>
-    #include <dlfcn.h>
+#include <unistd.h>
+#include <sys/stat.h>
+#include <fcntl.h>
+#include <dlfcn.h>
 #endif
 
-// ============================================================================
-// Oodle Compression Options (Crucial for Frostbite & The Crew 2)
-// ============================================================================
+// Oodle standard compression options structure
 struct OodleLZ_CompressOptions {
+    uint32_t version;
     uint32_t verbosity;
-    uint32_t spaceSpeedTradeoffBytes; // Required for Frostbite exact matches
+    uint32_t spaceSpeedTradeoffBytes;
     uint32_t unused;
-    uint32_t sendQuantumCRCs;         // Required for The Crew 2
+    uint32_t sendQuantumCRCs;
     uint32_t crcPolicy;
     uint32_t tryHarder;
-    uint32_t reserved[10];            // Padding for DLL compatibility
+    uint32_t tryDictionary;
+    float farMatchMinEfficacy;
+    uint32_t reserved[4];
 };
 
-// ============================================================================
-// Global Configuration & Constants
-// ============================================================================
 namespace Config {
-    constexpr size_t WIN_SIZE_LARGE = 128 * 1024 * 1024;
-    constexpr size_t WIN_SIZE_SMALL = 64 * 1024 * 1024;
-    constexpr size_t GAP_POOL_CHUNK = 16 * 1024 * 1024;
-
-    constexpr uint32_t TEST_USIZES[] = {65536, 131072, 262144};
-    constexpr int32_t ALL_METHODS[] = {8, 9, 11, 12, 13}; // Added Hydra (13)
+    // [STABLE FIX] Reduced window sizes to prevent massive memory spikes
+    constexpr size_t WIN_SIZE_LARGE = 64 * 1024 * 1024;    // was 128 MiB
+    constexpr size_t WIN_SIZE_SMALL = 32 * 1024 * 1024;    // was 64 MiB
+    constexpr size_t GAP_POOL_CHUNK = 8 * 1024 * 1024;     // was 16 MiB
+    
+    // Uncompressed sizes to test against blocks
+    constexpr uint32_t TEST_USIZES[] = {
+        1048576, 655360, 524288, 393216, 327680, 262144, 196608, 131072,
+        98304, 65536, 49152, 32768, 24576, 16384, 12288, 8192,
+        4096, 2048
+    };
+    
+    constexpr int32_t ALL_METHODS[] = {8, 9, 11, 12, 13}; 
     constexpr int32_t ALL_LEVELS[] = {1, 2, 3, 4, 5, 6, 7, 8, 9};
     constexpr size_t MAX_SAFE_COMPRESSED_SIZE = 100 * 1024 * 1024;
 
-    // All 5 Oodle Magic Bytes
-    constexpr uint8_t MAGIC_KRAKEN    = 0x8C;
-    constexpr uint8_t MAGIC_LEVIATHAN = 0xCC;
-    constexpr uint8_t MAGIC_MERMAID   = 0x4C;
-    constexpr uint8_t MAGIC_SELKIE    = 0x2C;
-    constexpr uint8_t MAGIC_HYDRA     = 0x6C;
+    // Standard Oodle block magic markers
+    constexpr uint8_t MAGIC_COMPRESSED_FIRST   = 0x8C;
+    constexpr uint8_t MAGIC_UNCOMPRESSED_FIRST = 0xCC;
+    constexpr uint8_t MAGIC_COMPRESSED_CHAIN   = 0x0C;
+    constexpr uint8_t MAGIC_UNCOMPRESSED_CHAIN = 0x4C;
+
+    constexpr uint32_t MIN_VALID_FIRST_SEGMENT = 8;
+    constexpr uint32_t MIN_OODLE_BLOCK_SIZE = 16;
+
+    // Safety limits to prevent OOM or infinite loops
+    constexpr uint32_t MAX_BLOCKS = 5000000;          
+    constexpr uint32_t MAX_WALK_ITERATIONS = 100000;  
 }
 
-// ============================================================================
-// Oodle Definitions (Global Function Pointers)
-// ============================================================================
-// FIX: Added the '*' to make these actual pointer types, and fixed 'const void*'
+// Function pointers for dynamic Oodle library loading
 typedef int64_t (*OodleLZ_Decompress_t)(
     const void* src, int64_t srcLen, void* dst, int64_t dstLen,
     int32_t fuzzSafe, int32_t checkCRC, int32_t verbosity,
     void* decBufBase, size_t decBufSize, void* fpCallback, void* callbackUserData,
-    void* decoderMemory, size_t decoderMemorySize, int32_t threadPhase, int32_t unused
-);
+    void* decoderMemory, size_t decoderMemorySize, int32_t threadPhase, int32_t unused);
 
 typedef int64_t (*OodleLZ_Compress_t)(
     int32_t codec, const void* src, int64_t srcLen, void* dst, int32_t level,
-    void* opts, void* context, void* unused, size_t dictionarySize
-);
+    void* opts, const void* dictionaryBase, const void* lrm,
+    void* scratchMem, int64_t scratchSize);
 
 extern OodleLZ_Decompress_t OodleLZ_Decompress;
 extern OodleLZ_Compress_t   OodleLZ_Compress;
+
 bool LoadOodle();
 
-// Legacy aliases for backward compatibility with existing code
-constexpr uint8_t MAGIC_8C = Config::MAGIC_KRAKEN;
-constexpr uint8_t MAGIC_CC = Config::MAGIC_LEVIATHAN;
-
-// ============================================================================
-// Lightweight Debug Logger
-// ============================================================================
 namespace Logger {
     enum class Level { Info, Warn, Error, Debug };
     extern bool is_debug_enabled;
     extern std::ofstream debug_log;
-
+    // Mutex to make logging thread-safe across components
+    extern std::mutex log_mutex;
+    
     inline void Init(bool debug) {
         is_debug_enabled = debug;
         if (is_debug_enabled) debug_log.open("oodleforge_debug.log", std::ios::app);
@@ -107,6 +114,7 @@ namespace Logger {
 
     inline void Log(Level lvl, const std::string& msg) {
         if (lvl == Level::Debug && !is_debug_enabled) return;
+        std::lock_guard<std::mutex> lock(log_mutex); // [FIX] Added mutex to prevent garbled multithreaded logs
         std::string prefix = (lvl == Level::Debug) ? "[DEBUG] " : 
                              (lvl == Level::Warn)  ? "[WARN] " : 
                              (lvl == Level::Error) ? "[ERROR] " : "[INFO] ";
@@ -119,9 +127,6 @@ namespace Logger {
     }
 }
 
-// ============================================================================
-// AES Wrapper & RAII
-// ============================================================================
 void* AES_Context_Create(const uint8_t* key);
 void  AES_Context_Destroy(void* ctx);
 void  AES_Context_Decrypt(void* ctx, uint8_t* buf, uint32_t len);
@@ -132,9 +137,6 @@ struct AESContextDeleter {
 };
 using AESContextPtr = std::unique_ptr<void, AESContextDeleter>;
 
-// ============================================================================
-// Enums & Error Handling
-// ============================================================================
 enum class ErrorCode {
     SUCCESS = 0, ERR_FILE_NOT_FOUND = 1, ERR_INVALID_MAGIC = 2, ERR_CRC_MISMATCH = 3,
     ERR_COMPRESSION_FAILED = 4, ERR_INVALID_ARGUMENT = 5, ERR_BUFFER_OVERFLOW = 6, ERR_UNKNOWN = 255
@@ -155,9 +157,6 @@ public:
     ErrorCode get_code() const { return code; }
 };
 
-// ============================================================================
-// Data Structures (Cross-platform alignment)
-// ============================================================================
 #pragma pack(push, 1)
 struct PreHeader {
     uint32_t magic;
@@ -166,6 +165,7 @@ struct PreHeader {
     uint32_t block_count;
     uint8_t use_aes;
     uint8_t aes_key[32];
+    uint8_t reserved[11];
 };
 
 struct BlockHeader {
@@ -215,17 +215,9 @@ struct ScanStats {
     uint32_t fails_unidentified = 0;
     std::map<int32_t, uint32_t> method_counts;
     std::map<int32_t, uint32_t> level_counts;
-    
-    void add_match(int32_t m, int32_t l) {
-        matches_identified++;
-        method_counts[m]++;
-        level_counts[l]++;
-    }
+    void add_match(int32_t m, int32_t l) { matches_identified++; method_counts[m]++; level_counts[l]++; }
 };
 
-// ============================================================================
-// Utility Classes
-// ============================================================================
 template <typename T>
 class ObjectPool {
     size_t item_size;
@@ -235,33 +227,58 @@ public:
     ObjectPool(size_t count, size_t sz) : item_size(sz) {
         for(size_t i = 0; i < count; ++i) available.push(std::make_shared<std::vector<T>>(sz));
     }
-
     struct Handle {
         std::shared_ptr<std::vector<T>> ptr;
         ObjectPool* pool;
-
+        
+        // Constructor
         Handle(std::shared_ptr<std::vector<T>> p, ObjectPool* pl) : ptr(p), pool(pl) {}
+        
+        // Destructor: Automatically returns vector to pool when out of scope
         ~Handle() { if(ptr && pool) pool->release(ptr); }
         
-        Handle(Handle&& o) noexcept : ptr(o.ptr), pool(o.pool) { o.ptr = nullptr; o.pool = nullptr; }
-        Handle& operator=(Handle&& o) noexcept { 
-            ptr = o.ptr; pool = o.pool; o.ptr = nullptr; o.pool = nullptr; return *this; 
+        // Move Constructor
+        Handle(Handle&& o) noexcept : ptr(o.ptr), pool(o.pool) { 
+            o.ptr = nullptr; 
+            o.pool = nullptr; 
         }
         
+        // Move Assignment Operator [FIXED]
+        Handle& operator=(Handle&& o) noexcept {
+            if (this != &o) {
+                // 1. If this handle already holds a resource, return it to the pool first
+                if (ptr && pool) {
+                    pool->release(ptr);
+                }
+                
+                // 2. Transfer ownership
+                ptr = o.ptr;
+                pool = o.pool;
+                
+                // 3. Invalidate source handle
+                o.ptr = nullptr;
+                o.pool = nullptr;
+            }
+            return *this; // <-- Crucial: Fixes compilation failure & UB
+        }
+        
+        // Disable copy semantics to prevent double-releasing resources
+        Handle(const Handle&) = delete;
+        Handle& operator=(const Handle&) = delete;
+
         std::vector<T>& get() { return *ptr; }
     };
 
     Handle acquire() {
         std::unique_lock<std::mutex> lock(mtx);
         if(available.empty()) available.push(std::make_shared<std::vector<T>>(item_size));
-        auto p = available.front(); available.pop();
-        return Handle(p, this);
+        auto p = available.front(); available.pop(); return Handle(p, this);
     }
 
     void release(std::shared_ptr<std::vector<T>> p) {
-        std::unique_lock<std::mutex> lock(mtx);
-        available.push(p);
+        std::unique_lock<std::mutex> lock(mtx); available.push(p);
     }
+
 };
 
 class ThreadSafeReader {
@@ -276,180 +293,17 @@ public:
 };
 
 class FastStreamWriter {
-    struct Impl {
-        std::vector<uint8_t> active_buf;
-        std::vector<uint8_t> flush_buf;
-        std::vector<uint8_t> disk_buf;
-        size_t buffer_size = 64 * 1024 * 1024;
-        uint64_t total_flushed = 0;
-        uint64_t pending_disk_bytes = 0; 
-        
-        std::ofstream file;
-        std::thread flush_thread;
-        
-        mutable std::mutex mtx; 
-        std::mutex file_io_mtx; 
-        std::condition_variable cv;
-        
-        bool flush_ready = false;
-        bool stop_flush = false;
-
-        Impl() {
-            active_buf.reserve(buffer_size);
-            flush_buf.reserve(buffer_size);
-            disk_buf.reserve(buffer_size);
-        }
-
-        ~Impl() { close(); }
-
-        bool open(const std::string& path, size_t /*size*/ = 0) {
-            file.open(path, std::ios::binary | std::ios::trunc);
-            if (!file) return false;
-
-            stop_flush = false;
-            flush_ready = false;
-            active_buf.clear();
-            flush_buf.clear();
-            disk_buf.clear();
-            total_flushed = 0;
-            pending_disk_bytes = 0;
-
-            flush_thread = std::thread([this]() {
-                while (true) {
-                    std::unique_lock<std::mutex> lock(mtx);
-                    cv.wait(lock, [this]() { return flush_ready || stop_flush; });
-
-                    if (!flush_buf.empty()) {
-                        std::swap(disk_buf, flush_buf);
-                        pending_disk_bytes = disk_buf.size();
-                        flush_ready = false;
-                        cv.notify_all();
-                        lock.unlock();
-
-                        size_t chunk_size = disk_buf.size();
-                        
-                        {
-                            std::lock_guard<std::mutex> io_lock(file_io_mtx);
-                            file.write(reinterpret_cast<const char*>(disk_buf.data()), chunk_size);
-                        }
-
-                        disk_buf.clear();
-                        
-                        lock.lock();
-                        total_flushed += chunk_size;
-                        pending_disk_bytes = 0;
-                        cv.notify_all(); 
-                    } else if (stop_flush) {
-                        break;
-                    }
-                }
-            });
-
-            return true;
-        }
-
-        void write(const char* data, size_t len) {
-            std::unique_lock<std::mutex> lock(mtx);
-            if (len > buffer_size) {
-                cv.wait(lock, [this]() { return !flush_ready; });
-                if (!active_buf.empty()) {
-                    std::swap(flush_buf, active_buf);
-                    flush_ready = true;
-                    cv.notify_all();
-                    cv.wait(lock, [this]() { return !flush_ready; });
-                }
-                lock.unlock();
-                
-                {
-                    std::lock_guard<std::mutex> io_lock(file_io_mtx);
-                    file.write(data, len);
-                }
-                
-                lock.lock();
-                total_flushed += len;
-                return;
-            }
-
-            while (active_buf.size() + len > buffer_size) {
-                cv.wait(lock, [this]() { return !flush_ready; });
-                if (!active_buf.empty()) {
-                    std::swap(flush_buf, active_buf);
-                    flush_ready = true;
-                    cv.notify_all();
-                }
-            }
-
-            active_buf.insert(active_buf.end(), data, data + len);
-        }
-
-        void flush() {
-            std::unique_lock<std::mutex> lock(mtx);
-            cv.wait(lock, [this]() { return !flush_ready; });
-
-            if (!active_buf.empty()) {
-                std::swap(flush_buf, active_buf);
-                flush_ready = true;
-                cv.notify_all();
-            }
-
-            cv.wait(lock, [this]() { return !flush_ready; });
-            
-            {
-                std::lock_guard<std::mutex> io_lock(file_io_mtx);
-                file.flush();
-            }
-        }
-
-        void close() {
-            flush();
-            {
-                std::unique_lock<std::mutex> lock(mtx);
-                if (!stop_flush) {
-                    stop_flush = true;
-                    cv.notify_all();
-                }
-            }
-            if (flush_thread.joinable()) flush_thread.join();
-            if (file.is_open()) file.close();
-        }
-
-        uint64_t tellp() const {
-            std::unique_lock<std::mutex> lock(mtx);
-            return total_flushed + active_buf.size() + flush_buf.size() + pending_disk_bytes;
-        }
-
-        void seekp(uint64_t pos) {
-            std::unique_lock<std::mutex> lock(mtx);
-            cv.wait(lock, [this]() { return !flush_ready; });
-            if (!active_buf.empty()) {
-                std::swap(flush_buf, active_buf);
-                flush_ready = true;
-                cv.notify_all();
-                cv.wait(lock, [this]() { return !flush_ready; });
-            }
-            
-            cv.wait(lock, [this]() { return pending_disk_bytes == 0; });
-            
-            {
-                std::lock_guard<std::mutex> io_lock(file_io_mtx);
-                file.clear();
-                file.seekp(static_cast<std::streamoff>(pos));
-            }
-        }
-    };
-
+    struct Impl;
     std::unique_ptr<Impl> pImpl_;
 public:
-    FastStreamWriter() : pImpl_(std::make_unique<Impl>()) {}
-    ~FastStreamWriter() { pImpl_->close(); }
-    bool open(const std::string& path, size_t size = 0) { return pImpl_->open(path, size); }
-    void write(const char* data, size_t len) { pImpl_->write(data, len); }
-    void flush() { pImpl_->flush(); }
-    uint64_t tellp() const { return pImpl_->tellp(); }
-    void seekp(uint64_t pos) { pImpl_->seekp(pos); }
-
-    size_t get_buffer_size() const { return pImpl_->buffer_size; }
-    size_t get_write_pos() const { return pImpl_->active_buf.size(); }
+    FastStreamWriter();
+    ~FastStreamWriter();
+    bool open(const std::string& path, size_t size = 0);
+    void write(const char* data, size_t len);
+    void flush();
+    void close();
+    uint64_t tellp() const;
+    void seekp(uint64_t pos);
 };
 
 class BlockScanner {
@@ -463,15 +317,29 @@ class BlockScanner {
     AESContextPtr aes_ctx_;
     uint64_t win_start_ = 0;
     size_t win_len_ = 0;
-    
+    std::vector<uint8_t> chain_probe_buf_;
     bool ensure_window(uint64_t pos, size_t needed);
     bool find_next_magic(uint64_t& pos, uint64_t limit);
-    std::shared_ptr<BlockTask> extract_block(uint64_t pos, uint32_t usize, uint32_t csize, bool is_encrypted);
-
+    uint64_t WalkOodleChain(uint64_t start_pos, uint8_t& codec_out, bool& is_valid);
 public:
     BlockScanner(ThreadSafeReader& reader, uint64_t file_size, bool use_aes, const std::vector<uint8_t>& aes_key, size_t win_size);
     ~BlockScanner();
     std::shared_ptr<BlockTask> extract_next_block(uint64_t& pos, uint64_t limit, const std::vector<uint32_t>& test_sizes);
+
+    struct ScanDiagnostics {
+        uint64_t magic_candidates_found = 0;
+        uint64_t passed_fast_rejection = 0;
+        uint64_t rejected_by_fast_rejection = 0;
+        uint64_t blocks_validated = 0;
+        std::map<uint8_t, uint64_t> rejected_b1_histogram;
+        uint64_t walk_called = 0;
+        uint64_t walk_not_a_chain_start = 0;
+        uint64_t walk_first_consistency_fail = 0;
+        uint64_t walk_first_too_small = 0;  
+        uint64_t walk_bounds_fail = 0;
+        uint64_t walk_succeeded = 0;
+    };
+    ScanDiagnostics diagnostics_;
 };
 
 class ThreadPool {
@@ -481,11 +349,9 @@ class ThreadPool {
     std::condition_variable condition;
     bool stop;
     void shutdown();
-
 public:
     ThreadPool(size_t threads);
     ~ThreadPool();
-
     template <class F>
     std::future<typename std::invoke_result<F>::type> enqueue(F&& f) {
         using return_type = typename std::invoke_result<F>::type;
@@ -509,7 +375,6 @@ class UI {
     std::mutex log_mutex;
     std::atomic<uint32_t> matches{0};
     std::atomic<uint32_t> fails{0};
-
 public:
     UI(uint64_t sz, uint32_t blks, bool v);
     void log(const std::string& message);
@@ -519,29 +384,35 @@ public:
     double get_elapsed();
 };
 
-// ============================================================================
-// Global Function Declarations
-// ============================================================================
 uint32_t CalculateCRC32(const uint8_t* data, size_t len);
 void write_gap(ThreadSafeReader& reader, FastStreamWriter& writer, ObjectPool<char>& pool, uint64_t offset, uint64_t length);
 std::vector<int32_t> ParseMethods(const std::string& input);
 std::vector<int32_t> ParseLevels(const std::string& input);
 std::vector<uint8_t> ParseKey(const std::string& hex);
 void ResolveAESKey(std::vector<uint8_t>& aesKey, bool& useAES, const PreHeader& hdr);
+uint32_t GetOodleBlockSize(const uint8_t* hdr, size_t available_len, uint8_t& codec_out);
 
-// FIX: Added 'opts' parameter to CompressAndVerify
-int64_t CompressAndVerify(int32_t method, int32_t level, const uint8_t* src, uint32_t usize, 
-                          const uint8_t* expected, uint32_t expected_size, std::vector<uint8_t>& temp_buf, 
-                          const OodleLZ_CompressOptions* opts = nullptr);
+int64_t CompressAndVerify(int32_t method, int32_t level, const uint8_t* src, uint32_t usize,
+    const uint8_t* expected, uint32_t expected_size, std::vector<uint8_t>& temp_buf,
+    const OodleLZ_CompressOptions* opts = nullptr);
 
-// FIX: Added 'tradeoff_bytes' and 'quantum_crc' to match main.cpp
-Result<int> RunScan(const std::string& input_path, bool verbose, int num_threads, const std::vector<int32_t>& m_ids, 
-                    const std::vector<uint8_t>& aesKey, bool useAES, double scan_percent, bool debug_mode,
-                    uint32_t tradeoff_bytes, bool quantum_crc);
+bool TryMatchBlock(const std::shared_ptr<BlockTask>& task,
+    const std::vector<int32_t>& all_methods,
+    const std::vector<int32_t>& all_levels,
+    std::set<std::pair<int32_t, int32_t>>& cache,
+    std::shared_mutex& cache_mutex,
+    int32_t& out_method, int32_t& out_level,
+    const OodleLZ_CompressOptions* opts);
 
-Result<int> RunEncode(const std::string& input_path, const std::string& output_path, bool verbose, int num_threads, 
-                      const std::vector<int32_t>& m_ids, const std::vector<int32_t>& opt_levels, bool opt_auto, bool opt_force, 
-                      const std::vector<uint8_t>& aesKey, bool useAES, uint32_t tradeoff_bytes, bool quantum_crc);
+Result<int> RunScan(const std::string& input_path, bool verbose, int num_threads,
+    const std::vector<int32_t>& m_ids, const std::vector<int32_t>& opt_levels,
+    bool opt_auto, bool opt_force, const std::vector<uint8_t>& aesKey,
+    bool useAES, double scan_percent, bool debug_mode,
+    uint32_t tradeoff_bytes, bool quantum_crc);
 
-Result<int> RunReconstruct(const std::string& input_path, const std::string& output_path, bool verbose, int num_threads, 
-                           std::vector<uint8_t>& aesKey, bool& useAES, uint32_t tradeoff_bytes, bool quantum_crc);
+Result<int> RunEncode(const std::string& input_path, const std::string& output_path, bool verbose, int num_threads,
+    const std::vector<int32_t>& m_ids, const std::vector<int32_t>& opt_levels, bool opt_auto, bool opt_force,
+    const std::vector<uint8_t>& aesKey, bool useAES, uint32_t tradeoff_bytes, bool quantum_crc);
+
+Result<int> RunReconstruct(const std::string& input_path, const std::string& output_path, bool verbose, int num_threads,
+    std::vector<uint8_t>& aesKey, bool& useAES, uint32_t tradeoff_bytes, bool quantum_crc);

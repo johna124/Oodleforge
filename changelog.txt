@@ -1,3 +1,50 @@
+OodleForge v33.4 Changelog
+Build Date: June 30, 2026
+Focus: Memory Discipline, Scanner Robustness, and I/O Reliability.
+
+
+### Major Improvements
+
+• Memory & Pipeline Optimization
+  - Reduced async pipeline queue from *3 to *2 per thread (major RAM savings on large archives)
+  - Tuned window sizes (WIN_SIZE_LARGE = 64MB, WIN_SIZE_SMALL = 32MB)
+  - GAP_POOL_CHUNK optimization for massive files (50GB+)
+  - Better buffer management across encode/scan/reconstruct
+
+• BlockScanner Enhancements
+  - Full WalkOodleChain() implementation for reliable multi-quantum block chain detection
+  - Improved magic byte detection and fast rejection filters
+  - Enhanced probe-based size discovery for unknown blocks
+  - Comprehensive diagnostics (magic candidates, walk stats, gap analysis)
+
+• Reconstruction & AES Fixes
+  - Safer AES padding logic during re-encryption
+  - Improved error handling and I/O exception catching in reconstruction
+  - Better CRC verification paths
+
+• FastStreamWriter Stability
+  - Multiple defensive fixes for background flushing thread
+  - Safer tellp()/seekp() synchronization
+  - Reduced risk of torn writes and deadlocks
+
+• General Stability & Polish
+  - Thread-safe logging with mutex protection
+  - Fixed cross-platform Oodle loading
+  - Prevented potential infinite loops in scanner
+  - Updated version string and help text to v33.4
+  - Cleaner gap reporting in scan mode
+
+### Bug Fixes
+  - Fixed several edge cases in chain walking
+  - Resolved minor string/syntax issues
+  - Improved ThreadPool future handling
+  - Fixed compilation error in ObjectPool<T>::Handle move constructor (removed invalid return statement)
+
+
+### Compatibility
+  - Excellent Wine/Linux support (liboo2core.so.9)
+  - Maintained byte-perfect reconstruction with AES + gaps + CRC
+
 OodleForge v33.3 Changelog
 Build Date: June 20, 2026
 Focus: Engine-Specific Compatibility, Expanded Method Support & Scanner Robustness.
@@ -6,11 +53,11 @@ Major Features & Improvements
 
 • Added full Hydra (13) support
   - Included in ALL_METHODS, magic byte detection, method parser, and compression pipeline
-  - All five Oodle magic bytes now supported (0x8C, 0xCC, 0x4C, 0x2C, 0x6C)
+  - All five Oodle magic bytes now supported (0x8C, 0xCC, 0x4L, 0x2C, 0x6C)
 
 • Engine-Specific Options (Critical for exact reconstruction) -EXPERIMENTAL DUE HARDWARE LIMITATIONS-
-  - `-tradeoff <n>` : Sets spaceSpeedTradeoffBytes (essential for Frostbite games)
-  - `-quantumcrc`   : Enables sendQuantumCRCs (required for The Crew 2 and similar titles)
+  - -tradeoff <n> : Sets spaceSpeedTradeoffBytes (essential for Frostbite games)
+  - -quantumcrc   : Enables sendQuantumCRCs (required for The Crew 2 and similar titles)
 
 • Scanner Enhancements
   - Upgraded BlockScanner to check all 5 magic bytes
@@ -61,6 +108,7 @@ UI Accuracy: Real-time throughput and ETA calculations are now keyed to the pend
 Implementation Overview
 The following visual map illustrates the new thread-safe flow for data processing:
 
+[Diagram placeholder from v33.2]
 
 v33.1 (June 2026) - The Memory Beast
 
@@ -70,7 +118,6 @@ Reduces HDD write operations from 4K+ to only ~16-17
 Main encode threads stay at full speed
 Byte-perfect tellp() for responsive UI
 Removed obsolete HDD/SSD pacing logic
-
 
 v33.0 (June 2026) - Multi-Method Edition
 
@@ -89,4 +136,3 @@ HDD pacing system introduced
 v1.x (Early 2026)
 
 Basic Kraken-only scanner and reconstructor
-

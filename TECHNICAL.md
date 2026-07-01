@@ -1,182 +1,319 @@
 OodleForge Technical Reference
-Version: 33.0
-Date: June 2026
-Developed in 34 days on a 17-year-old PC
-This document contains complete low-level technical details of the OodleForge archive format, data structures, algorithms, and implementation notes.
+Version: 33.4 Scanner Robustness, Advanced Block Detection, and Critical Buffer Fixes.
+Date: June 28, 2026
+Status: Production-Ready | Native Linux Support | Dynamic Discovery Engine
 
-Archive File Format (.oodle)
+This document contains complete low-level technical details of the OodleForge 
+archive format, data structures, algorithms, and implementation notes.
+
+================================================================================
+1. ARCHIVE FILE FORMAT (.oodle)
+================================================================================
 
 1.1 PreHeader (64 bytes at offset 0)
+
 struct PreHeader {
-uint32_t magic;          // 0x50524546 ("PREF")
-uint32_t version;        // 33
-uint64_t original_size;  // Original file size
-uint32_t block_count;    // Number of blocks
-uint8_t  use_aes;        // 0 = disabled, 1 = enabled
-uint8_t  aes_key[32];    // AES-256 key (if use_aes == 1)
-uint8_t  reserved[23];   // Padding to 64 bytes
-} attribute((packed));
+    uint32_t magic;           // 0x50524546 ("PREF")
+    uint32_t version;         // 33
+    uint64_t original_size;   // Original file size
+    uint32_t block_count;     // Number of blocks
+    uint8_t  use_aes;         // 0 = disabled, 1 = enabled
+    uint8_t  aes_key[32];     // AES-256 key (if use_aes == 1)
+    uint8_t  reserved[23];    // Padding to 64 bytes
+} __attribute__((packed));
+
 1.2 File Layout Overview
+
 [ PreHeader (64 bytes) ]
 [ Block Data Region (variable) ]
-
-Gap data (raw bytes from original file)
-Block 0 data
-Gap data
-Block 1 data
-...
+    Gap data (raw bytes from original file)
+    Block 0 data (BlockHeader + decompressed data OR raw compressed data)
+    Gap data
+    Block 1 data
+    ...
 [ PreBlock Metadata Array (at END of file) ]
-PreBlock[0]
-PreBlock[1]
-...
-PreBlock[block_count-1]
+    PreBlock[0]
+    PreBlock[1]
+    ...
+    PreBlock[block_count-1]
 
 The metadata is stored at the end to allow streaming writes during encoding.
 
-PreBlock Structure (40 bytes per entry)
+================================================================================
+2. PREBLOCK STRUCTURE (40 bytes per entry)
+================================================================================
 
 struct PreBlock {
-uint64_t original_offset;         // Offset in original file
-uint32_t stored_size;             // Size of data stored in .oodle
-uint32_t decompressed_size;       // Uncompressed size (usize)
-uint32_t original_compressed_size;// Original compressed size
-uint32_t compressor;              // method | (level << 8)
-uint8_t  exact_match;             // 1 = exact match
-uint8_t  was_encrypted;           // 1 = was AES encrypted
-uint8_t  reserved;                // 1 byte padding
-uint32_t crc32;                   // CRC32 of data as written
-} attribute((packed));
+    uint64_t original_offset;          // Offset in original file
+    uint32_t stored_size;              // Size of data stored in .oodle
+    uint32_t decompressed_size;        // Uncompressed size (usize)
+    uint32_t original_compressed_size; // Original compressed size
+    uint32_t compressor;               // method | (level << 8)
+    uint8_t  exact_match;              // 1 = exact match
+    uint8_t  was_encrypted;            // 1 = was AES encrypted
+    uint8_t  reserved;                 // 1 byte padding
+    uint32_t crc32;                    // CRC32 of data as written
+} __attribute__((packed));
 
-Block Types
+================================================================================
+3. BLOCK TYPES
+================================================================================
 
+exact_match = 1: Exact Oodle match
+- Stored as: BlockHeader (4 bytes) + decompressed data
+- Reconstruction: Re-compress using saved method + level
 
-exact_match = 1 : Exact Oodle match
-Stored as: BlockHeader (4 bytes) + decompressed data
-Reconstruction: Re-compress using saved method + level
-exact_match = 0 : Raw / Failed match
-Stored as: Original compressed Oodle data (verbatim)
-Reconstruction: Copied as-is
+exact_match = 0: Raw / Failed match
+- Stored as: Original compressed Oodle data (verbatim)
+- Reconstruction: Copied as-is
 
 BlockHeader (only for exact_match blocks):
 struct BlockHeader {
-uint32_t stored_size;   // == decompressed_size
-} attribute((packed));
+    uint32_t stored_size;   // == decompressed_size
+} __attribute__((packed));
 
-Example Hex Dumps
+================================================================================
+4. EXAMPLE HEX DUMPS
+================================================================================
 
 4.1 PreHeader Example (AES enabled)
+
 00000000  46 52 45 50 21 00 00 00 00 00 00 00 00 00 00 00  PREF!...........
 00000010  00 00 00 00 00 00 00 00 01 2b 7e 15 16 28 ae d2 a6  .........+~..(..
 00000020  ab f7 15 88 09 cf 4f 3c 00 00 00 00 00 00 00 00 00  ......O<........
 00000030  00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00  ................
 
-magic = 50 52 45 46 ("PREF")
-version = 33
-use_aes = 01
-AES key starts at byte 0x11
+- magic = 50 52 45 46 ("PREF")
+- version = 33
+- use_aes = 01
+- AES key starts at byte 0x11
 
 4.2 PreBlock Example (Exact Match, Kraken Level 5)
+
 00000000  00 00 00 00 00 00 00 00 00 10 00 00 00 00 10 00  ................
 00000010  00 00 10 00 05 08 00 00 01 01 00 00 ab cd ef 12  ................
 
-original_offset = 0
-stored_size = 4096
-decompressed_size = 4096
-compressor = 0x00000805 (Method 8 / Level 5)
-exact_match = 1
-was_encrypted = 1
+- original_offset = 0
+- stored_size = 4096
+- decompressed_size = 4096
+- compressor = 0x00000805 (Method 8 / Level 5)
+- exact_match = 1
+- was_encrypted = 1
 
+================================================================================
+5. CORE ALGORITHMS (v33.4 Architecture)
+================================================================================
 
-Core Algorithms
+5.1 Dynamic Discovery Block Scanning
 
-5.1 Block Scanning
+Unlike legacy tools that guess block sizes, Oodleforge uses a 3-tier strategy:
 
-Sliding window (64-128 MiB)
-Searches for magic bytes 0x8C and 0xCC
-Uses binary search + OodleLZ_Decompress to find exact compressed size
-AES decryption done transparently inside the window
+1. Dynamic Discovery (Primary):
+   - Allocates a persistent 32MB chain_probe_buf_
+   - Passes raw header to OodleLZ_Decompress with massive output buffer
+   - Oodle self-terminates and returns exact usize
+   - Catches 100% of blocks, including non-standard sizes
 
-5.2 Exact Match Detection
+2. Brute Force Fallback (Secondary):
+   - Iterates through Config::TEST_USIZES
+   - Finds valid decompression match
 
-Tries multiple method + level combinations
-Uses OodleLZ_Compress + memcmp for perfect byte-for-byte match
-Successful pairs are cached across threads
+3. WalkOodleChain (Tertiary):
+   - Parses multi-segment chain headers
+   - Uses Config::MIN_VALID_FIRST_SEGMENT = 8
+   - Prevents false rejections
 
-5.3 Reconstruction
+5.2 Relaxed Validation Logic
 
-Reads metadata from end of file
-exact_match blocks: re-compress using stored method+level
-Raw blocks: copy verbatim
-Gaps filled with original data using write_gap()
+To prevent rejecting valid uncompressed or slightly-expanded blocks:
 
-5.4 AES-256-CBC
+OLD: if (found_csize > 0 && found_csize < usize && found_csize >= 16)
 
-Uses tiny-AES-C implementation
-Per-block encryption/decryption
-Standard CBC mode (IV = previous ciphertext)
-Padded to 16-byte boundaries
+NEW: if (found_csize > 0 && found_csize <= found_usize + 1024 && found_csize >= 16)
 
-5.5 I/O Optimizations (v33.1 Architecture)
-ThreadSafeReader: Platform-specific fast random reads.
+This allows csize to be up to **1024 bytes larger** than usize, catching:
+- Uncompressed blocks (csize > usize due to header overhead)
+- Blocks where compression slightly expanded the data
+
+5.3 Exact Match Detection
+
+- Tries multiple method + level combinations
+- Uses OodleLZ_Compress + memcmp for perfect byte-for-byte match
+- Successful pairs are cached across threads using std::shared_mutex
+- Prevents "Thundering Herd" problem
+
+5.4 I/O Optimizations (The Memory Beast)
+
+ThreadSafeReader:
+- Uses pread() on Linux for thread-safe, lock-free random reads
+- Platform-specific fast random reads
+
 FastStreamWriter (Async Double-Buffered):
-64 MB in-memory ring buffer.
-Dedicated background physical disk worker thread.
-True parallelization: Main encoder threads write to RAM at ~50 GB/s while the mechanical drive flushes 64MB chunks in the background.
-Zero-allocation buffer swapping using std::swap to prevent heap thrashing.
-Reduces HDD write operations from 4K+ to only ~16-17 per GB.
+- 64 MB in-memory ring buffer
+- Dedicated background physical disk worker thread
+- True parallelization: Main encoder threads write to RAM at ~50 GB/s while 
+  the drive flushes 64MB chunks in the background
+- Zero-allocation buffer swapping using std::swap
+- Reduces HDD write operations from 4000+ to only ~16-17 per GB
+- pending_disk_bytes tracker synchronizes UI with background thread
+
+5.5 AES-256-CBC Encryption
+
+- Uses tiny-AES-C implementation
+- Per-block encryption/decryption
+- Standard CBC mode (IV = previous ciphertext)
+- Padded to 16-byte boundaries
+- IV zero-initialized with calloc (fixed in v33.2)
+
+================================================================================
+6. THREADING & PERFORMANCE
+================================================================================
+
+- ThreadPool with bounded queue
+- Default max 8 threads
+- Pipeline pattern with backpressure
+- Thread-local buffers to reduce memory pressure
+- ObjectPool for gap writing (prevents heap fragmentation)
+
+================================================================================
+7. CHANGELOG
+================================================================================
+
+OodleForge v33.4 Changelog (June 28, 2026)
+Focus: Dynamic Discovery, Native Linux Dominance
+
+MAJOR FEATURES:
+- Dynamic Discovery Engine:
+  * 32MB probe buffer lets Oodle dictate block sizes
+
+- Relaxed Block Validation:
+  * Updated to csize <= usize + 1024
+  * Successfully captures uncompressed blocks
+  * Captures blocks where compression expanded data
+
+- Native Linux I/O:
+  * Full dlopen and pread implementation
+  * First native Linux Oodle precompressor
+
+CRITICAL FIXES:
+- Chain Walker Fix:
+  * Replaced hardcoded 16 with Config::MIN_VALID_FIRST_SEGMENT = 8
+  * Recovers valid micro-segments
+
+- Memory Thrashing Fix:
+  * Moved 32MB probe buffer allocation outside while loop
+  * Prevents OS memory manager overload on large files
 
 
-Threading & Performance
+OodleForge v33.3 Changelog (June 2026)
+- Engine-Specific Compatibility
+- Expanded Method Support
+- Scanner Robustness
 
+OodleForge v33.2 Changelog (June 18, 2026)
+Focus: Threading Stability, Cryptographic Integrity, and Resource Efficiency
 
-ThreadPool with bounded queue
-Default max 8 threads
-Pipeline pattern with backpressure
-Thread-local buffers to reduce memory pressure
+CRITICAL FIXES:
+- FastStreamWriter Thread-Safety:
+  * Implemented file_io_mtx to serialize physical disk I/O
+  * Prevents file handle contention during multi-threaded writes
+  * Added pending_disk_bytes tracker for UI synchronization
 
+- AES Cryptographic Correction:
+  * IV Initialization: Swapped malloc for calloc in AES_Context_Create
+  * Ensures IV is always zero-initialized
+  * Key Length: Updated aes.h to force AES256 mode
 
-Changelog
+- Scanner Cache (Performance Optimization):
+  * Added "double-check" lock pattern in TryMatchBlock
+  * Prevents "Thundering Herd" problem
+  * Multiple threads no longer brute-force same block simultaneously
 
-OodleForge v33.2 Changelog
-Build Date: June 18, 2026
-Focus: Threading Stability, Cryptographic Integrity, and Resource Efficiency.
+PORTABILITY & BUILD:
+- POSIX Compatibility: Sanitized LoadOodle() for Linux/Unix
+- Memory Management: Replaced GCC-specific packing with #pragma pack
 
-🛠 Critical Fixes (Backend)
-FastStreamWriter Thread-Safety:
-Implemented file_io_mtx to strictly serialize physical disk I/O, preventing file handle contention during multi-threaded heavy writes.
-Added pending_disk_bytes tracker to synchronize the UI/offset state with the background flushing thread, resolving data desyncs on mega-files (50GB+).
+UI & MONITORING:
+- Fixed seekp implementation for background thread synchronization
+- Real-time throughput keyed to pending_disk_bytes count
 
-AES Cryptographic Correction:
+OodleForge v33.1 Changelog (June 2026)
+- The Memory Beast: Async Double-Buffered I/O
+- Major performance improvements
+- Pacing removed
 
-IV Initialization: Swapped malloc for calloc in AES_Context_Create. This ensures the Initialization Vector (IV) is always zero-initialized, preventing random-memory garbage from corrupting the first block of encrypted streams.
+OodleForge v33.0 Changelog
+- Multi-Method Edition
+- Full support for Kraken + Leviathan + Mermaid + Selkie + Hydra
+- -auto / -force modes
 
-Key Length: Updated aes.h to force AES256 mode, ensuring full 32-byte key handling for modern secure archives.
+================================================================================
+8. KNOWN LIMITATIONS
+================================================================================
 
-Scanner Cache (Performance Optimization):
+- Max recommended threads: 8
+- AES assumes standard per-block CBC
+- Scanning can have false positives on random data
+- Requires matching oo2core DLL/SO version for perfect reconstruction
+- No support for Oodle dictionaries
+- Best performance on SSD
 
-Added a "double-check" lock pattern in scan.cpp's TryMatchBlock. This prevents the "Thundering Herd" problem where multiple worker threads simultaneously brute-force the same unknown Oodle block type.
+================================================================================
+9. WINE COMPATIBILITY
+================================================================================
 
-🚀 Portability & Build
-POSIX Compatibility: Sanitized LoadOodle() to remove Windows-specific .dll fallback logic on Linux/Unix systems, allowing clean liboo2core.so loading.
+This tool runs very well under Wine without problems. The "it actually works" 
+factor is high. Tested on Linux via Wine.
 
-Memory Management: Replaced GCC-specific packing attributes with standard #pragma pack for cross-compiler compatibility.
+================================================================================
+10. BUILD INSTRUCTIONS
+================================================================================
 
-📊 UI & Monitoring
-State Tracking: Fixed seekp implementation to ensure the background thread fully flushes before the file pointer moves, preventing data corruption during reconstruction.
+Linux (GCC/Clang):
+g++ -O3 -std=c++17 -pthread -lz scan.cpp encode.cpp reconstruct.cpp common.cpp main.cpp -o oodleforge -ldl
 
-UI Accuracy: Real-time throughput and ETA calculations are now keyed to the pending_disk_bytes count, providing a more precise progress readout for large-scale operations.
+Windows (MinGW):
+make
 
+Required flags:
+- O3: Maximum optimization
+- std=c++17: C++17 standard
+- pthread: Threading support
+- lz: zlib compression
+- ldl: Dynamic library loading (Linux)
 
-Known Limitations
+================================================================================
+11. CONFIGURATION CONSTANTS
+================================================================================
 
+From common.h:
 
-Max recommended threads: 8
-AES assumes standard per-block CBC
-Scanning can have false positives on random data
-Requires matching oo2core DLL version for perfect reconstruction
-No support for Oodle dictionaries
-Best performance on SSD with -ssd flag
+TEST_USIZES[] = {
+    1048576, 655360, 524288, 393216, 327680, 262144, 196608, 131072,
+    98304, 65536, 49152, 32768, 24576, 16384, 12288, 8192,
+    4096, 2048
+}
 
+ALL_METHODS[] = {8, 9, 11, 12, 13}
+ALL_LEVELS[] = {1, 2, 3, 4, 5, 6, 7, 8, 9}
 
-Wine Compatibility
-This tool runs very well under Wine without problems. The "it actually works" factor is high. Tested on Linux via Wine.
+MIN_VALID_FIRST_SEGMENT = 8
+MAX_SAFE_COMPRESSED_SIZE = 100 MB
+GAP_POOL_CHUNK = 16 MB
+
+Magic bytes:
+MAGIC_COMPRESSED_FIRST   = 0x8C
+MAGIC_UNCOMPRESSED_FIRST = 0xCC
+MAGIC_COMPRESSED_CHAIN   = 0x0C
+MAGIC_UNCOMPRESSED_CHAIN = 0x4C
+
+================================================================================
+END OF TECHNICAL REFERENCE
+================================================================================
+
+For more information, visit:
+https://github.com/johna124/Oodleforge
+
+Developed in 45 days on legacy hardware.
+The Kraken is free.
+

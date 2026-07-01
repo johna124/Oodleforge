@@ -71,9 +71,15 @@ oodleforge.exe r archive.oodle restored.bin
 - -auto usually finds the perfect level
 - Keep oo2core_*.dll in the same folder as the executable
 
+## How to compile
+
+Windows (MinGW64): make -f Makefile.windows
+Linux (native): make -f Makefile.linux
 ---
 
 ## Version History
+
+- v33.4  Scanner Robustness, Advanced Block Detection, and Critical Buffer Fixes.
 
 - v33.3 (June 2026) Engine-Specific Compatibility, Expanded Method Support & Scanner Robustnes
 
