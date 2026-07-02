@@ -6,7 +6,7 @@
 namespace Logger {
     bool is_debug_enabled = false;
     std::ofstream debug_log;
-    std::mutex log_mutex; // Instantiation of the log mutex
+    std::mutex log_mutex;
 }
 
 void* AES_Context_Create(const uint8_t* key) {
@@ -194,27 +194,35 @@ size_t ThreadSafeReader::pread(char* dest, size_t count, uint64_t offset) const 
 // ----- FastStreamWriter (Stable with Error Checking) ----------------------
 struct FastStreamWriter::Impl {
     std::vector<uint8_t> active_buf, flush_buf, disk_buf;
-    // [FIX] Buffer size reduced to 32MB to prevent RAM spikes
     size_t buffer_size = 32 * 1024 * 1024;
     uint64_t total_flushed = 0; uint64_t pending_disk_bytes = 0;
     std::ofstream file; std::thread flush_thread;
     mutable std::mutex mtx; std::mutex file_io_mtx; std::condition_variable cv;
     bool flush_ready = false; bool stop_flush = false;
     
-    // [FIX] Atomic flag to catch I/O errors from the background thread safely
     std::atomic<bool> io_error{false}; 
+    std::string last_error;
 
     Impl() { active_buf.reserve(buffer_size); flush_buf.reserve(buffer_size); disk_buf.reserve(buffer_size); }
-    ~Impl() { close(); }
+    
+    ~Impl() {
+        try {
+            close();
+        } catch (...) {
+            // ignore
+        }
+    }
 
-    // [FIX] Check wrapper to instantly crash out if the file writer died
     void check_io() const {
         if (io_error) throw std::runtime_error("Background I/O write failed (e.g. disk full).");
     }
 
     bool open(const std::string& path, size_t = 0) {
         file.open(path, std::ios::binary | std::ios::trunc);
-        if (!file) return false;
+        if (!file) {
+            last_error = "Failed to open file: " + path;
+            return false;
+        }
         stop_flush = false; flush_ready = false; io_error = false;
         active_buf.clear(); flush_buf.clear(); disk_buf.clear();
         total_flushed = 0; pending_disk_bytes = 0;
@@ -231,7 +239,8 @@ struct FastStreamWriter::Impl {
                     { 
                         std::lock_guard<std::mutex> io_lock(file_io_mtx); 
                         if (!file.write(reinterpret_cast<const char*>(disk_buf.data()), chunk_size)) {
-                            io_error = true; // [FIX] Signal the main thread on failure
+                            io_error = true;
+                            last_error = "Background write failed";
                         }
                     }
                     disk_buf.clear(); lock.lock();
@@ -243,43 +252,60 @@ struct FastStreamWriter::Impl {
     }
 
     void write(const char* data, size_t len) {
+        // [FIX] Early exit if already in error state
+        if (io_error.load()) return;
         check_io();
         std::unique_lock<std::mutex> lock(mtx);
         if (len > buffer_size) {
             cv.wait(lock, [this]() { return !flush_ready; });
-            if (!active_buf.empty()) { std::swap(flush_buf, active_buf); flush_ready = true; cv.notify_all(); }
-            
-            // [FIX] Ordering race: wait for actual disk completion before raw write bypass
-            cv.wait(lock, [this]() { return pending_disk_bytes == 0; });
+            if (!active_buf.empty()) { 
+                std::swap(flush_buf, active_buf); 
+                flush_ready = true; 
+                cv.notify_all(); 
+            }
+            cv.wait(lock, [this]() { return !flush_ready && pending_disk_bytes == 0; });
             check_io();
             lock.unlock();
             
             { 
                 std::lock_guard<std::mutex> io_lock(file_io_mtx); 
-                if(!file.write(data, len)) io_error = true; 
+                if(!file.write(data, len)) {
+                    io_error = true;
+                    last_error = "Direct write failed";
+                }
             }
             lock.lock(); total_flushed += len; return;
         }
         while (active_buf.size() + len > buffer_size) {
             cv.wait(lock, [this]() { return !flush_ready; });
             check_io();
-            if (!active_buf.empty()) { std::swap(flush_buf, active_buf); flush_ready = true; cv.notify_all(); }
+            if (!active_buf.empty()) { 
+                std::swap(flush_buf, active_buf); 
+                flush_ready = true; 
+                cv.notify_all(); 
+            }
         }
         active_buf.insert(active_buf.end(), data, data + len);
     }
 
     void flush() {
+        if (io_error.load()) return;
         check_io();
         std::unique_lock<std::mutex> lock(mtx);
         cv.wait(lock, [this]() { return !flush_ready; });
-        if (!active_buf.empty()) { std::swap(flush_buf, active_buf); flush_ready = true; cv.notify_all(); }
-        
-        // [FIX] Guarantee disk completion on forced flush
+        if (!active_buf.empty()) { 
+            std::swap(flush_buf, active_buf); 
+            flush_ready = true; 
+            cv.notify_all(); 
+        }
         cv.wait(lock, [this]() { return !flush_ready && pending_disk_bytes == 0; });
         check_io();
         { 
             std::lock_guard<std::mutex> io_lock(file_io_mtx); 
-            if(!file.flush()) io_error = true; 
+            if(!file.flush()) {
+                io_error = true;
+                last_error = "Flush failed";
+            }
         }
     }
 
@@ -296,24 +322,37 @@ struct FastStreamWriter::Impl {
     }
 
     void seekp(uint64_t pos) {
+        if (io_error.load()) return;
         check_io();
         std::unique_lock<std::mutex> lock(mtx);
         cv.wait(lock, [this]() { return !flush_ready; });
-        if (!active_buf.empty()) { std::swap(flush_buf, active_buf); flush_ready = true; cv.notify_all(); }
+        if (!active_buf.empty()) { 
+            std::swap(flush_buf, active_buf); 
+            flush_ready = true; 
+            cv.notify_all(); 
+        }
         cv.wait(lock, [this]() { return !flush_ready && pending_disk_bytes == 0; });
         check_io();
         { std::lock_guard<std::mutex> io_lock(file_io_mtx); file.clear(); file.seekp(static_cast<std::streamoff>(pos)); }
     }
+
+    bool has_error() const { return io_error.load(); }
+    std::string get_last_error() const { return last_error; }
+    void clear_error() { io_error = false; last_error.clear(); }
 };
 
 FastStreamWriter::FastStreamWriter() : pImpl_(std::make_unique<Impl>()) {}
-FastStreamWriter::~FastStreamWriter() { pImpl_->close(); }
+FastStreamWriter::~FastStreamWriter() = default;
+
 bool FastStreamWriter::open(const std::string& path, size_t size) { return pImpl_->open(path, size); }
 void FastStreamWriter::write(const char* data, size_t len) { pImpl_->write(data, len); }
 void FastStreamWriter::flush() { pImpl_->flush(); }
 void FastStreamWriter::close() { pImpl_->close(); }
 uint64_t FastStreamWriter::tellp() const { return pImpl_->tellp(); }
 void FastStreamWriter::seekp(uint64_t pos) { pImpl_->seekp(pos); }
+bool FastStreamWriter::has_error() const { return pImpl_->has_error(); }
+std::string FastStreamWriter::get_last_error() const { return pImpl_->get_last_error(); }
+void FastStreamWriter::clear_error() { pImpl_->clear_error(); }
 
 // ----- BlockScanner ------------------------------------------------------
 BlockScanner::BlockScanner(ThreadSafeReader& reader, uint64_t file_size, bool use_aes, const std::vector<uint8_t>& aes_key, size_t win_size)
@@ -721,15 +760,22 @@ void ResolveAESKey(std::vector<uint8_t>& aesKey, bool& useAES, const PreHeader& 
 uint32_t CalculateCRC32(const uint8_t* data, size_t len) {
     return static_cast<uint32_t>(crc32(crc32(0L, Z_NULL, 0), data, static_cast<uInt>(len)));
 }
-void write_gap(ThreadSafeReader& reader, FastStreamWriter& writer, ObjectPool<char>& pool, uint64_t offset, uint64_t length) {
-    if (length == 0) return;
+
+// [FIX] write_gap now returns bool to signal error
+bool write_gap(ThreadSafeReader& reader, FastStreamWriter& writer, ObjectPool<char>& pool, uint64_t offset, uint64_t length) {
+    if (length == 0) return true;
     auto buf_handle = pool.acquire(); auto& buf = buf_handle.get();
     uint64_t remaining = length; uint64_t current_offset = offset;
     while (remaining > 0) {
         size_t to_write = std::min(static_cast<uint64_t>(buf.size()), remaining);
         size_t read = reader.pread(buf.data(), to_write, current_offset);
-        if (read == 0) break;
-        writer.write(buf.data(), read); current_offset += read; remaining -= read;
+        if (read == 0) {
+            // Failed to read the expected amount -> propagate error
+            return false;
+        }
+        writer.write(buf.data(), read);
+        current_offset += read;
+        remaining -= read;
     }
+    return true;
 }
-

@@ -64,33 +64,44 @@ Result<int> RunReconstruct(const std::string& input_path, const std::string& out
         
         try {
             if (task->gap_len > 0) {
-                write_gap(reader, fast_out, gap_pool, task->gap_archive_offset, task->gap_len);
+                if (!write_gap(reader, fast_out, gap_pool, task->gap_archive_offset, task->gap_len)) {
+                    std::cerr << "[FATAL] Failed to write gap data.\n";
+                    return false;
+                }
+                // [FIX] Check error after writing gap
+                if (fast_out.has_error()) {
+                    std::cerr << "[FATAL] Gap write failed: " << fast_out.get_last_error() << "\n";
+                    return false;
+                }
             }
 
             uint8_t* data_ptr = task->b.exact_match ? task->compressed_out.data() : task->block_data_in.data();
             size_t data_len = task->b.exact_match ? task->compressed_out.size() : task->b.stored_size;
 
-            // [FIX] AES Encryption Truncation fix applied here
+            // AES encryption truncation fix
             if (useAES && task->b.was_encrypted) {
-            size_t aes_len = (data_len + 15) & ~15;
+                size_t aes_len = (data_len + 15) & ~15;
     
-            if (task->b.exact_match && task->compressed_out.size() < aes_len) {
-            task->compressed_out.resize(aes_len, 0);
-            data_ptr = task->compressed_out.data(); // Refresh pointer!
-        }
-        else if (!task->b.exact_match && task->block_data_in.size() < aes_len) {
-        task->block_data_in.resize(aes_len, 0);
-        data_ptr = task->block_data_in.data(); // Refresh pointer!
-    }
-    
-    AES_Context_Encrypt(aesCtxE.get(), data_ptr, static_cast<uint32_t>(aes_len));
-    data_len = aes_len;
-}
+                if (task->b.exact_match && task->compressed_out.size() < aes_len) {
+                    task->compressed_out.resize(aes_len, 0);
+                    data_ptr = task->compressed_out.data();
+                } else if (!task->b.exact_match && task->block_data_in.size() < aes_len) {
+                    task->block_data_in.resize(aes_len, 0);
+                    data_ptr = task->block_data_in.data();
+                }
+                
+                AES_Context_Encrypt(aesCtxE.get(), data_ptr, static_cast<uint32_t>(aes_len));
+                data_len = aes_len;
+            }
 
             fast_out.write(reinterpret_cast<const char*>(data_ptr), data_len);
+            // [FIX] Check error after write
+            if (fast_out.has_error()) {
+                std::cerr << "[FATAL] Write failed: " << fast_out.get_last_error() << "\n";
+                return false;
+            }
             
         } catch (const std::exception& e) {
-            // [FIX] Catch I/O error from FastStreamWriter gracefully
             std::cerr << "\n[FATAL] File I/O Error: " << e.what() << std::endl;
             return false;
         }
@@ -173,9 +184,15 @@ Result<int> RunReconstruct(const std::string& input_path, const std::string& out
         archive_offset += b.stored_size;
         original_offset = b.original_offset + b.original_compressed_size;
 
-        // [FIX] RAM restriction: Queue bound tightened to * 2. 
         while (dec_queue.size() >= static_cast<size_t>(num_threads * 2)) {
-            auto completed = dec_queue.front().get();
+            std::shared_ptr<DecTask> completed;
+            try {
+                completed = dec_queue.front().get();
+            } catch (const std::exception& e) {
+                std::cerr << "\n[FATAL] Task exception: " << e.what() << std::endl;
+                fatal_abort = true;
+                break;
+            }
             dec_queue.pop();
             if (!process_and_write(completed)) {
                 fatal_abort = true;
@@ -190,12 +207,20 @@ Result<int> RunReconstruct(const std::string& input_path, const std::string& out
                 last_ui_time = now;
             }
         }
+        if (fatal_abort) break;
     }
 
-    while (!dec_queue.empty()) {
-        auto completed = dec_queue.front().get();
+    while (!dec_queue.empty() && !fatal_abort) {
+        std::shared_ptr<DecTask> completed;
+        try {
+            completed = dec_queue.front().get();
+        } catch (const std::exception& e) {
+            std::cerr << "\n[FATAL] Task exception: " << e.what() << std::endl;
+            fatal_abort = true;
+            break;
+        }
         dec_queue.pop();
-        if (!fatal_abort && !process_and_write(completed)) {
+        if (!process_and_write(completed)) {
             fatal_abort = true;
         }
     }
@@ -206,9 +231,17 @@ Result<int> RunReconstruct(const std::string& input_path, const std::string& out
 
     try {
         if (hdr.original_size > original_offset) {
-            write_gap(reader, fast_out, gap_pool, archive_offset, hdr.original_size - original_offset);
+            if (!write_gap(reader, fast_out, gap_pool, archive_offset, hdr.original_size - original_offset)) {
+                return Result<int>(ErrorCode::ERR_UNKNOWN, "Failed to write final gap.");
+            }
+            if (fast_out.has_error()) {
+                return Result<int>(ErrorCode::ERR_UNKNOWN, "Final gap write failed: " + fast_out.get_last_error());
+            }
         }
         fast_out.flush();
+        if (fast_out.has_error()) {
+            return Result<int>(ErrorCode::ERR_UNKNOWN, "Final flush failed: " + fast_out.get_last_error());
+        }
     } catch (const std::exception& e) {
         return Result<int>(ErrorCode::ERR_UNKNOWN, std::string("Final file write/flush failed: ") + e.what());
     }

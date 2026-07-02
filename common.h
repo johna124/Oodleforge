@@ -304,6 +304,10 @@ public:
     void close();
     uint64_t tellp() const;
     void seekp(uint64_t pos);
+    // Error query / control API
+    bool has_error() const;
+    std::string get_last_error() const;
+    void clear_error();   // reset error state
 };
 
 class BlockScanner {
@@ -385,7 +389,7 @@ public:
 };
 
 uint32_t CalculateCRC32(const uint8_t* data, size_t len);
-void write_gap(ThreadSafeReader& reader, FastStreamWriter& writer, ObjectPool<char>& pool, uint64_t offset, uint64_t length);
+bool write_gap(ThreadSafeReader& reader, FastStreamWriter& writer, ObjectPool<char>& pool, uint64_t offset, uint64_t length);
 std::vector<int32_t> ParseMethods(const std::string& input);
 std::vector<int32_t> ParseLevels(const std::string& input);
 std::vector<uint8_t> ParseKey(const std::string& hex);

@@ -46,8 +46,12 @@ Result<int> RunEncode(const std::string& input_path, const std::string& output_p
     
     try {
         fast_out.write(reinterpret_cast<const char*>(&hdr), sizeof(hdr));
+        // [FIX] Check error after write
+        if (fast_out.has_error()) {
+            return Result<int>(ErrorCode::ERR_UNKNOWN, "Failed to write header: " + fast_out.get_last_error());
+        }
     } catch(const std::exception& e) {
-        return Result<int>(ErrorCode::ERR_UNKNOWN, "Initial file structure setup failed.");
+        return Result<int>(ErrorCode::ERR_UNKNOWN, "Initial file structure setup failed: " + std::string(e.what()));
     }
 
     ThreadPool pool(num_threads);
@@ -72,17 +76,30 @@ Result<int> RunEncode(const std::string& input_path, const std::string& output_p
     opts.spaceSpeedTradeoffBytes = tradeoff_bytes;
     opts.sendQuantumCRCs = quantum_crc ? 1 : 0;
 
-    auto process_single_task = [&](std::shared_ptr<BlockTask> task) {
+    std::atomic<bool> fatal_io_error{false};
+
+    auto process_single_task = [&](std::shared_ptr<BlockTask> task) -> bool {
         try {
             if (task->pos > last_out) {
-                write_gap(reader, fast_out, gap_pool, last_out, task->pos - last_out);
+                if (!write_gap(reader, fast_out, gap_pool, last_out, task->pos - last_out)) {
+                    fatal_io_error = true;
+                    return false;
+                }
+                // [FIX] Check error after writing gap
+                if (fast_out.has_error()) {
+                    fatal_io_error = true;
+                    return false;
+                }
             }
             
             if (task->exact_match_found) {
                 good_matches_count++;
                 BlockHeader bh{task->usize};
                 fast_out.write(reinterpret_cast<const char*>(&bh), sizeof(bh));
+                if (fast_out.has_error()) { fatal_io_error = true; return false; }
+                
                 fast_out.write(reinterpret_cast<const char*>(task->dec_data.data()), task->usize);
+                if (fast_out.has_error()) { fatal_io_error = true; return false; }
                 
                 std::vector<uint8_t> written(sizeof(BlockHeader) + task->usize);
                 std::memcpy(written.data(), &bh, sizeof(BlockHeader));
@@ -105,6 +122,8 @@ Result<int> RunEncode(const std::string& input_path, const std::string& output_p
             } else {
                 fail_count++;
                 fast_out.write(reinterpret_cast<const char*>(task->raw_win_buf.data()), task->csize);
+                if (fast_out.has_error()) { fatal_io_error = true; return false; }
+                
                 uint32_t crc = CalculateCRC32(task->raw_win_buf.data(), task->csize);
                 
                 blocks.push_back({
@@ -121,12 +140,14 @@ Result<int> RunEncode(const std::string& input_path, const std::string& output_p
             }
         } catch(const std::exception& e) {
             std::cerr << "\n[FATAL] I/O error writing output: " << e.what() << std::endl;
-            exit(1); // Fatal exit on I/O fail to prevent metadata corruption
+            fatal_io_error = true;
+            return false;
         }
         
         last_out = task->pos + task->csize;
         task->raw_win_buf.clear();
         task->dec_data.clear();
+        return true;
     };
 
     auto last_ui_time = std::chrono::steady_clock::now();
@@ -216,29 +237,72 @@ Result<int> RunEncode(const std::string& input_path, const std::string& output_p
             return task;
         }));
         
-        // [FIX] Decreased allowable inflight tasks to 2 per core to save memory
         while (pipeline.size() >= static_cast<size_t>(num_threads * 2)) {
-            process_single_task(pipeline.front().get());
+            std::shared_ptr<BlockTask> completed;
+            try {
+                completed = pipeline.front().get();
+            } catch (const std::exception& e) {
+                std::cerr << "[FATAL] Task exception: " << e.what() << std::endl;
+                fatal_io_error = true;
+                break;
+            }
             pipeline.pop_front();
+            if (fatal_io_error) break;
+            if (!process_single_task(completed)) {
+                break;
+            }
         }
+        if (fatal_io_error) break;
     }
     
-    while (!pipeline.empty()) {
-        process_single_task(pipeline.front().get());
+    while (!pipeline.empty() && !fatal_io_error) {
+        std::shared_ptr<BlockTask> completed;
+        try {
+            completed = pipeline.front().get();
+        } catch (const std::exception& e) {
+            std::cerr << "[FATAL] Task exception: " << e.what() << std::endl;
+            fatal_io_error = true;
+            break;
+        }
         pipeline.pop_front();
+        if (!process_single_task(completed)) break;
     }
     
+    if (fatal_io_error) {
+        return Result<int>(ErrorCode::ERR_UNKNOWN, "I/O error during encoding. Output may be incomplete.");
+    }
+
     try {
         if (fSize > last_out) {
-            write_gap(reader, fast_out, gap_pool, last_out, fSize - last_out);
+            if (!write_gap(reader, fast_out, gap_pool, last_out, fSize - last_out)) {
+                return Result<int>(ErrorCode::ERR_UNKNOWN, "Failed to write final gap.");
+            }
+            if (fast_out.has_error()) {
+                return Result<int>(ErrorCode::ERR_UNKNOWN, "Final gap write failed: " + fast_out.get_last_error());
+            }
             fast_out.flush();
+            if (fast_out.has_error()) {
+                return Result<int>(ErrorCode::ERR_UNKNOWN, "Flush failed: " + fast_out.get_last_error());
+            }
         }
         
         hdr.block_count = static_cast<uint32_t>(blocks.size());
-        uint64_t out_end = fast_out.tellp();
         fast_out.write(reinterpret_cast<const char*>(blocks.data()), blocks.size() * sizeof(PreBlock));
+        if (fast_out.has_error()) {
+            return Result<int>(ErrorCode::ERR_UNKNOWN, "Failed to write block metadata: " + fast_out.get_last_error());
+        }
         fast_out.seekp(0);
+        if (fast_out.has_error()) {
+            return Result<int>(ErrorCode::ERR_UNKNOWN, "Seek failed: " + fast_out.get_last_error());
+        }
         fast_out.write(reinterpret_cast<const char*>(&hdr), sizeof(hdr));
+        if (fast_out.has_error()) {
+            return Result<int>(ErrorCode::ERR_UNKNOWN, "Failed to rewrite header: " + fast_out.get_last_error());
+        }
+        fast_out.flush();
+        if (fast_out.has_error()) {
+            return Result<int>(ErrorCode::ERR_UNKNOWN, "Final flush failed: " + fast_out.get_last_error());
+        }
     } catch (const std::exception& e) {
         return Result<int>(ErrorCode::ERR_UNKNOWN, std::string("Finalization I/O write failed: ") + e.what());
     }
@@ -260,7 +324,6 @@ Result<int> RunEncode(const std::string& input_path, const std::string& output_p
     if (!method_str.empty()) method_str.pop_back();
     if (!level_str.empty()) level_str.pop_back();
     
-    // Use fast_out.tellp() safely, no longer blindly trusting
     uint64_t final_size = 0;
     try { final_size = fast_out.tellp(); } catch(...) {}
     
