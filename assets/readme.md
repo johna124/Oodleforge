@@ -48,7 +48,7 @@ Born from 45 days of intense development on legacy hardware (Core 2 Quad Q6600, 
 *Building an elite systems engine on potato hardware with a "Team of Two" framework.*
 
 <div align="center">
-  <img src="assets/STORY-and-COMICS/dev-comic-45days.png" alt="The 45-Day Development Saga" width="100%">
+  <img src="STORY-and-COMICS/dev-comic-45days.png" alt="The 45-Day Development Saga" width="100%">
 </div>
 
 What started as a clicking hard drive and a dream became a battle against:
