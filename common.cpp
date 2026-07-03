@@ -2,6 +2,14 @@
 #include "common.h"
 #include <cstdlib>
 #include <zlib.h>
+#include <mutex>
+#include <condition_variable>
+#include <thread>
+#include <atomic>
+#include <vector>
+#include <fstream>
+#include <algorithm>
+#include <stdexcept>
 
 namespace Logger {
     bool is_debug_enabled = false;
@@ -191,168 +199,201 @@ bool ThreadSafeReader::is_open() const { return pImpl_->is_open(); }
 uint64_t ThreadSafeReader::get_size() const { return pImpl_->get_size(); }
 size_t ThreadSafeReader::pread(char* dest, size_t count, uint64_t offset) const { return pImpl_->pread(dest, count, offset); }
 
-// ----- FastStreamWriter (Stable with Error Checking) ----------------------
+// ----- FastStreamWriter (Triple-Buffer Async State Machine) ---------------
 struct FastStreamWriter::Impl {
-    std::vector<uint8_t> active_buf, flush_buf, disk_buf;
-    size_t buffer_size = 32 * 1024 * 1024;
-    uint64_t total_flushed = 0; uint64_t pending_disk_bytes = 0;
-    std::ofstream file; std::thread flush_thread;
-    mutable std::mutex mtx; std::mutex file_io_mtx; std::condition_variable cv;
-    bool flush_ready = false; bool stop_flush = false;
+    std::ofstream file;
+    std::vector<char> active_buf;
+    std::vector<char> flush_buf;
+    std::vector<char> disk_buf;
+    size_t buffer_size;
     
-    std::atomic<bool> io_error{false}; 
+    std::mutex mtx;
+    std::condition_variable cv;
+    std::thread flush_thread;
+    
+    bool flush_ready;
+    bool done;
+    std::atomic<bool> io_error;
     std::string last_error;
 
-    Impl() { active_buf.reserve(buffer_size); flush_buf.reserve(buffer_size); disk_buf.reserve(buffer_size); }
-    
+    Impl(size_t buf_sz = 32 * 1024 * 1024) 
+        : buffer_size(buf_sz), flush_ready(false), done(false), io_error(false) {
+        active_buf.reserve(buffer_size);
+        flush_buf.reserve(buffer_size);
+        disk_buf.reserve(buffer_size);
+    }
+
     ~Impl() {
-        try {
-            close();
-        } catch (...) {
-            // ignore
-        }
+        close();
     }
 
-    void check_io() const {
-        if (io_error) throw std::runtime_error("Background I/O write failed (e.g. disk full).");
-    }
-
-    bool open(const std::string& path, size_t = 0) {
-        file.open(path, std::ios::binary | std::ios::trunc);
-        if (!file) {
-            last_error = "Failed to open file: " + path;
+    bool open(const std::string& path) {
+        file.open(path, std::ios::binary);
+        if (!file.is_open()) {
+            last_error = "Failed to open output file: " + path;
+            io_error.store(true, std::memory_order_release);
             return false;
         }
-        stop_flush = false; flush_ready = false; io_error = false;
-        active_buf.clear(); flush_buf.clear(); disk_buf.clear();
-        total_flushed = 0; pending_disk_bytes = 0;
-        
-        flush_thread = std::thread([this]() {
-            while (true) {
-                std::unique_lock<std::mutex> lock(mtx);
-                cv.wait(lock, [this]() { return flush_ready || stop_flush; });
-                if (!flush_buf.empty()) {
-                    std::swap(disk_buf, flush_buf);
-                    pending_disk_bytes = disk_buf.size();
-                    flush_ready = false; cv.notify_all(); lock.unlock();
-                    size_t chunk_size = disk_buf.size();
-                    { 
-                        std::lock_guard<std::mutex> io_lock(file_io_mtx); 
-                        if (!file.write(reinterpret_cast<const char*>(disk_buf.data()), chunk_size)) {
-                            io_error = true;
-                            last_error = "Background write failed";
-                        }
-                    }
-                    disk_buf.clear(); lock.lock();
-                    total_flushed += chunk_size; pending_disk_bytes = 0; cv.notify_all();
-                } else if (stop_flush) { break; }
-            }
-        });
+        flush_thread = std::thread(&Impl::flush_worker, this);
         return true;
     }
 
+    void check_io() {
+        if (io_error.load(std::memory_order_acquire)) {
+            throw std::runtime_error("Async I/O Error: " + last_error);
+        }
+    }
+
     void write(const char* data, size_t len) {
-        // [FIX] Early exit if already in error state
-        if (io_error.load()) return;
-        check_io();
+        if (io_error.load(std::memory_order_acquire)) return;
+        
         std::unique_lock<std::mutex> lock(mtx);
-        if (len > buffer_size) {
-            cv.wait(lock, [this]() { return !flush_ready; });
-            if (!active_buf.empty()) { 
-                std::swap(flush_buf, active_buf); 
-                flush_ready = true; 
-                cv.notify_all(); 
-            }
-            cv.wait(lock, [this]() { return !flush_ready && pending_disk_bytes == 0; });
-            check_io();
-            lock.unlock();
+        size_t offset = 0;
+        const size_t FRACTURE_SIZE = 16 * 1024 * 1024; 
+        
+        while (offset < len) {
+            cv.wait(lock, [this]() { 
+                return !flush_ready || io_error.load(std::memory_order_acquire); 
+            });
             
-            { 
-                std::lock_guard<std::mutex> io_lock(file_io_mtx); 
-                if(!file.write(data, len)) {
-                    io_error = true;
-                    last_error = "Direct write failed";
-                }
+            check_io(); 
+            
+            size_t space_left = buffer_size - active_buf.size();
+            size_t chunk_to_write = std::min({len - offset, FRACTURE_SIZE, space_left});
+            
+            if (chunk_to_write == 0) {
+                std::swap(flush_buf, active_buf);
+                flush_ready = true;
+                cv.notify_all();
+                continue; 
             }
-            lock.lock(); total_flushed += len; return;
+            
+            active_buf.insert(active_buf.end(), data + offset, data + offset + chunk_to_write);
+            offset += chunk_to_write;
         }
-        while (active_buf.size() + len > buffer_size) {
-            cv.wait(lock, [this]() { return !flush_ready; });
-            check_io();
-            if (!active_buf.empty()) { 
-                std::swap(flush_buf, active_buf); 
-                flush_ready = true; 
-                cv.notify_all(); 
-            }
-        }
-        active_buf.insert(active_buf.end(), data, data + len);
     }
 
     void flush() {
-        if (io_error.load()) return;
-        check_io();
         std::unique_lock<std::mutex> lock(mtx);
-        cv.wait(lock, [this]() { return !flush_ready; });
-        if (!active_buf.empty()) { 
-            std::swap(flush_buf, active_buf); 
-            flush_ready = true; 
-            cv.notify_all(); 
-        }
-        cv.wait(lock, [this]() { return !flush_ready && pending_disk_bytes == 0; });
+        if (io_error.load(std::memory_order_acquire)) return;
+        
+        cv.wait(lock, [this]() { 
+            return !flush_ready || io_error.load(std::memory_order_acquire); 
+        });
         check_io();
-        { 
-            std::lock_guard<std::mutex> io_lock(file_io_mtx); 
-            if(!file.flush()) {
-                io_error = true;
-                last_error = "Flush failed";
-            }
+        
+        if (!active_buf.empty()) {
+            std::swap(flush_buf, active_buf);
+            flush_ready = true;
+            cv.notify_all();
         }
+        
+        cv.wait(lock, [this]() { 
+            return !flush_ready || io_error.load(std::memory_order_acquire); 
+        });
+        check_io();
     }
 
     void close() {
-        flush();
-        { std::unique_lock<std::mutex> lock(mtx); if (!stop_flush) { stop_flush = true; cv.notify_all(); } }
-        if (flush_thread.joinable()) flush_thread.join();
-        if (file.is_open()) file.close();
-    }
-
-    uint64_t tellp() const {
-        std::unique_lock<std::mutex> lock(mtx);
-        return total_flushed + active_buf.size() + flush_buf.size() + pending_disk_bytes;
-    }
-
-    void seekp(uint64_t pos) {
-        if (io_error.load()) return;
-        check_io();
-        std::unique_lock<std::mutex> lock(mtx);
-        cv.wait(lock, [this]() { return !flush_ready; });
-        if (!active_buf.empty()) { 
-            std::swap(flush_buf, active_buf); 
-            flush_ready = true; 
-            cv.notify_all(); 
+        {
+            std::unique_lock<std::mutex> lock(mtx);
+            if (done) return;
+            
+            if (!active_buf.empty() && !io_error.load(std::memory_order_acquire)) {
+                cv.wait(lock, [this]() { 
+                    return !flush_ready || io_error.load(std::memory_order_acquire); 
+                });
+                if (!io_error.load(std::memory_order_acquire)) {
+                    std::swap(flush_buf, active_buf);
+                    flush_ready = true;
+                }
+            }
+            done = true;
+            cv.notify_all();
         }
-        cv.wait(lock, [this]() { return !flush_ready && pending_disk_bytes == 0; });
-        check_io();
-        { std::lock_guard<std::mutex> io_lock(file_io_mtx); file.clear(); file.seekp(static_cast<std::streamoff>(pos)); }
+        
+        if (flush_thread.joinable()) {
+            flush_thread.join();
+        }
+        
+        if (file.is_open()) {
+            file.close();
+        }
     }
 
-    bool has_error() const { return io_error.load(); }
-    std::string get_last_error() const { return last_error; }
-    void clear_error() { io_error = false; last_error.clear(); }
+    void flush_worker() {
+        while (true) {
+            std::unique_lock<std::mutex> lock(mtx);
+            cv.wait(lock, [this]() { return flush_ready || done; });
+            
+            if (flush_ready) {
+                std::swap(disk_buf, flush_buf);
+                flush_ready = false;
+                lock.unlock();
+                cv.notify_all();
+                
+                if (!disk_buf.empty()) {
+                    file.write(disk_buf.data(), disk_buf.size());
+                    if (file.bad()) {
+                        std::lock_guard<std::mutex> err_lock(mtx);
+                        last_error = "Disk write failed. Disk full or hardware fault detected.";
+                        io_error.store(true, std::memory_order_release);
+                        cv.notify_all();
+                        return; 
+                    }
+                    disk_buf.clear();
+                }
+            } else if (done) {
+                break;
+            }
+        }
+    }
 };
 
 FastStreamWriter::FastStreamWriter() : pImpl_(std::make_unique<Impl>()) {}
 FastStreamWriter::~FastStreamWriter() = default;
 
-bool FastStreamWriter::open(const std::string& path, size_t size) { return pImpl_->open(path, size); }
+bool FastStreamWriter::open(const std::string& path, size_t size) { return pImpl_->open(path); }
 void FastStreamWriter::write(const char* data, size_t len) { pImpl_->write(data, len); }
 void FastStreamWriter::flush() { pImpl_->flush(); }
 void FastStreamWriter::close() { pImpl_->close(); }
-uint64_t FastStreamWriter::tellp() const { return pImpl_->tellp(); }
-void FastStreamWriter::seekp(uint64_t pos) { pImpl_->seekp(pos); }
-bool FastStreamWriter::has_error() const { return pImpl_->has_error(); }
-std::string FastStreamWriter::get_last_error() const { return pImpl_->get_last_error(); }
-void FastStreamWriter::clear_error() { pImpl_->clear_error(); }
+bool FastStreamWriter::has_error() const { return pImpl_->io_error.load(std::memory_order_acquire); }
+
+std::string FastStreamWriter::get_last_error() const { 
+    std::lock_guard<std::mutex> lock(pImpl_->mtx);
+    return pImpl_->last_error; 
+}
+
+void FastStreamWriter::clear_error() { 
+    pImpl_->io_error.store(false, std::memory_order_release); 
+    std::lock_guard<std::mutex> lock(pImpl_->mtx);
+    pImpl_->last_error.clear(); 
+}
+
+uint64_t FastStreamWriter::tellp() const {
+    std::lock_guard<std::mutex> lock(pImpl_->mtx);
+    if (pImpl_->file.is_open() && !pImpl_->io_error.load(std::memory_order_acquire)) {
+        return static_cast<uint64_t>(pImpl_->file.tellp());
+    }
+    return 0;
+}
+
+void FastStreamWriter::seekp(uint64_t pos) {
+    if (pImpl_->io_error.load(std::memory_order_acquire)) return;
+    pImpl_->check_io();
+    std::unique_lock<std::mutex> lock(pImpl_->mtx);
+    pImpl_->cv.wait(lock, [this]() { return !pImpl_->flush_ready; });
+    if (!pImpl_->active_buf.empty()) { 
+        std::swap(pImpl_->flush_buf, pImpl_->active_buf); 
+        pImpl_->flush_ready = true; 
+        pImpl_->cv.notify_all(); 
+    }
+    pImpl_->cv.wait(lock, [this]() { return !pImpl_->flush_ready; });
+    pImpl_->check_io();
+    pImpl_->file.clear(); 
+    pImpl_->file.seekp(static_cast<std::streamoff>(pos));
+}
+
 
 // ----- BlockScanner ------------------------------------------------------
 BlockScanner::BlockScanner(ThreadSafeReader& reader, uint64_t file_size, bool use_aes, const std::vector<uint8_t>& aes_key, size_t win_size)
@@ -731,7 +772,6 @@ std::vector<int32_t> ParseMethods(const std::string& input) {
         size_t end = token.find_last_not_of(" \t\r\n");
         if (start != std::string::npos) token = token.substr(start, end - start + 1);
         std::transform(token.begin(), token.end(), token.begin(), ::tolower);
-        // [FIX] Correctly assigned Hydra to 12, Leviathan to 13
         if (token == "kraken" || token == "8") ids.push_back(8);
         else if (token == "leviathan" || token == "13") ids.push_back(13);
         else if (token == "mermaid" || token == "9") ids.push_back(9);
@@ -761,7 +801,6 @@ uint32_t CalculateCRC32(const uint8_t* data, size_t len) {
     return static_cast<uint32_t>(crc32(crc32(0L, Z_NULL, 0), data, static_cast<uInt>(len)));
 }
 
-// [FIX] write_gap now returns bool to signal error
 bool write_gap(ThreadSafeReader& reader, FastStreamWriter& writer, ObjectPool<char>& pool, uint64_t offset, uint64_t length) {
     if (length == 0) return true;
     auto buf_handle = pool.acquire(); auto& buf = buf_handle.get();
@@ -770,7 +809,6 @@ bool write_gap(ThreadSafeReader& reader, FastStreamWriter& writer, ObjectPool<ch
         size_t to_write = std::min(static_cast<uint64_t>(buf.size()), remaining);
         size_t read = reader.pread(buf.data(), to_write, current_offset);
         if (read == 0) {
-            // Failed to read the expected amount -> propagate error
             return false;
         }
         writer.write(buf.data(), read);
