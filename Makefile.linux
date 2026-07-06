@@ -1,6 +1,6 @@
-# Linux Makefile for OodleForge v34 (Legendary Edition)
 CXX = g++
-CXXFLAGS = -std=c++17 -O3 -march=x86-64 -mtune=generic -flto -Wall -Wextra -s
+CXXFLAGS = -std=c++17 -O3 -march=x86-64-v3 -mtune=generic -flto -Wall -Wextra -s -mavx2 -mfma
+# Or even more aggressive: -march=haswell or -march=znver3 (if targeting modern CPUs)
 INCLUDES = -I. -Iaes 
 LIBS = -lpthread -ldl -static-libgcc -static-libstdc++ -lz 
 
