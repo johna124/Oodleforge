@@ -147,7 +147,9 @@ Happy Kraken Hunting!
 ================================================================================
 
 Made with blood, sweat, and too much coffee.
-Version 33.3 - Engine-Specific Compatibility, Expanded Method Support & Scanner Robustness.
+Version 34 - Memory Discipline, I/O Tracking Accuracy, 
+       Lock-Free Performance, Hardware-Accelerated Scanning, Wine Compatibility, 
+       and Bulletproof Correctness.
 
 NOTE:
 This project is designed for GCC/Clang (Linux/MinGW). Visual Studio

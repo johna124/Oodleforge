@@ -1,5 +1,4 @@
 #pragma once
-
 #include <iostream>
 #include <vector>
 #include <string>
@@ -25,6 +24,7 @@
 #include <filesystem>
 #include <condition_variable>
 #include <deque>
+#include <array>
 
 #ifdef _WIN32
 #ifndef NOMINMAX
@@ -53,70 +53,63 @@ struct OodleLZ_CompressOptions {
 };
 
 namespace Config {
-    // [STABLE FIX] Reduced window sizes to prevent massive memory spikes
-    constexpr size_t WIN_SIZE_LARGE = 64 * 1024 * 1024;    // was 128 MiB
-    constexpr size_t WIN_SIZE_SMALL = 32 * 1024 * 1024;    // was 64 MiB
-    constexpr size_t GAP_POOL_CHUNK = 8 * 1024 * 1024;     // was 16 MiB
-    
-    // Uncompressed sizes to test against blocks
+    constexpr size_t WIN_SIZE_LARGE = 64 * 1024 * 1024;
+    constexpr size_t WIN_SIZE_SMALL = 32 * 1024 * 1024;
+    constexpr size_t GAP_POOL_CHUNK = 8 * 1024 * 1024;
     constexpr uint32_t TEST_USIZES[] = {
         1048576, 655360, 524288, 393216, 327680, 262144, 196608, 131072,
         98304, 65536, 49152, 32768, 24576, 16384, 12288, 8192,
         4096, 2048
     };
-    
-    constexpr int32_t ALL_METHODS[] = {8, 9, 11, 12, 13}; 
+    constexpr int32_t ALL_METHODS[] = {8, 9, 11, 12, 13};
     constexpr int32_t ALL_LEVELS[] = {1, 2, 3, 4, 5, 6, 7, 8, 9};
     constexpr size_t MAX_SAFE_COMPRESSED_SIZE = 100 * 1024 * 1024;
-
-    // Standard Oodle block magic markers
+    constexpr size_t MAX_DECOMP_BUF_SIZE = 256 * 1024 * 1024;
     constexpr uint8_t MAGIC_COMPRESSED_FIRST   = 0x8C;
     constexpr uint8_t MAGIC_UNCOMPRESSED_FIRST = 0xCC;
     constexpr uint8_t MAGIC_COMPRESSED_CHAIN   = 0x0C;
     constexpr uint8_t MAGIC_UNCOMPRESSED_CHAIN = 0x4C;
-
     constexpr uint32_t MIN_VALID_FIRST_SEGMENT = 8;
     constexpr uint32_t MIN_OODLE_BLOCK_SIZE = 16;
-
-    // Safety limits to prevent OOM or infinite loops
-    constexpr uint32_t MAX_BLOCKS = 5000000;          
-    constexpr uint32_t MAX_WALK_ITERATIONS = 100000;  
+    constexpr uint32_t MAX_BLOCKS = 5000000;
+    constexpr uint32_t MAX_WALK_ITERATIONS = 100000;
 }
 
-// Function pointers for dynamic Oodle library loading
-typedef int64_t (*OodleLZ_Decompress_t)(
+inline size_t SafeCompressBound(size_t srcSize) {
+    return srcSize * 2 + 65536;
+}
+
+typedef int64_t (OodleLZ_Decompress_t)(
     const void* src, int64_t srcLen, void* dst, int64_t dstLen,
     int32_t fuzzSafe, int32_t checkCRC, int32_t verbosity,
     void* decBufBase, size_t decBufSize, void* fpCallback, void* callbackUserData,
     void* decoderMemory, size_t decoderMemorySize, int32_t threadPhase, int32_t unused);
 
-typedef int64_t (*OodleLZ_Compress_t)(
+typedef int64_t (OodleLZ_Compress_t)(
     int32_t codec, const void* src, int64_t srcLen, void* dst, int32_t level,
     void* opts, const void* dictionaryBase, const void* lrm,
     void* scratchMem, int64_t scratchSize);
 
-extern OodleLZ_Decompress_t OodleLZ_Decompress;
-extern OodleLZ_Compress_t   OodleLZ_Compress;
-
+extern OodleLZ_Decompress_t* OodleLZ_Decompress;
+extern OodleLZ_Compress_t*   OodleLZ_Compress;
 bool LoadOodle();
 
 namespace Logger {
     enum class Level { Info, Warn, Error, Debug };
     extern bool is_debug_enabled;
     extern std::ofstream debug_log;
-    // Mutex to make logging thread-safe across components
     extern std::mutex log_mutex;
     
     inline void Init(bool debug) {
         is_debug_enabled = debug;
         if (is_debug_enabled) debug_log.open("oodleforge_debug.log", std::ios::app);
     }
-
+    
     inline void Log(Level lvl, const std::string& msg) {
         if (lvl == Level::Debug && !is_debug_enabled) return;
-        std::lock_guard<std::mutex> lock(log_mutex); // [FIX] Added mutex to prevent garbled multithreaded logs
-        std::string prefix = (lvl == Level::Debug) ? "[DEBUG] " : 
-                             (lvl == Level::Warn)  ? "[WARN] " : 
+        std::lock_guard<std::mutex> lock(log_mutex); // FIXED ARTIFACT
+        std::string prefix = (lvl == Level::Debug) ? "[DEBUG] " :
+                             (lvl == Level::Warn)  ? "[WARN] " :
                              (lvl == Level::Error) ? "[ERROR] " : "[INFO] ";
         if (is_debug_enabled && debug_log.is_open()) {
             debug_log << prefix << msg << "\n";
@@ -165,7 +158,9 @@ struct PreHeader {
     uint32_t block_count;
     uint8_t use_aes;
     uint8_t aes_key[32];
-    uint8_t reserved[11];
+    uint32_t space_speed_tradeoff_bytes;
+    uint8_t quantum_crc;
+    uint8_t reserved[6];
 };
 
 struct BlockHeader {
@@ -209,13 +204,20 @@ struct DecTask {
     std::string error_msg;
 };
 
+// FIX: Lock-free stats tracking
 struct ScanStats {
-    uint32_t blocks_found = 0;
-    uint32_t matches_identified = 0;
-    uint32_t fails_unidentified = 0;
+    std::atomic<uint32_t> blocks_found{0};
+    std::atomic<uint32_t> matches_identified{0};
+    std::atomic<uint32_t> fails_unidentified{0};
+    
     std::map<int32_t, uint32_t> method_counts;
     std::map<int32_t, uint32_t> level_counts;
-    void add_match(int32_t m, int32_t l) { matches_identified++; method_counts[m]++; level_counts[l]++; }
+    std::mutex map_mutex; 
+
+    void add_match(int32_t m, int32_t l) { 
+        matches_identified.fetch_add(1, std::memory_order_relaxed); 
+        // Map updates are handled via thread-local merging now
+    }
 };
 
 template <typename T>
@@ -230,55 +232,31 @@ public:
     struct Handle {
         std::shared_ptr<std::vector<T>> ptr;
         ObjectPool* pool;
-        
-        // Constructor
         Handle(std::shared_ptr<std::vector<T>> p, ObjectPool* pl) : ptr(p), pool(pl) {}
-        
-        // Destructor: Automatically returns vector to pool when out of scope
         ~Handle() { if(ptr && pool) pool->release(ptr); }
-        
-        // Move Constructor
-        Handle(Handle&& o) noexcept : ptr(o.ptr), pool(o.pool) { 
-            o.ptr = nullptr; 
-            o.pool = nullptr; 
-        }
-        
-        // Move Assignment Operator [FIXED]
+        Handle(Handle&& o) noexcept : ptr(o.ptr), pool(o.pool) { o.ptr = nullptr; o.pool = nullptr; }
         Handle& operator=(Handle&& o) noexcept {
             if (this != &o) {
-                // 1. If this handle already holds a resource, return it to the pool first
-                if (ptr && pool) {
-                    pool->release(ptr);
-                }
-                
-                // 2. Transfer ownership
+                if (ptr && pool) pool->release(ptr);
                 ptr = o.ptr;
                 pool = o.pool;
-                
-                // 3. Invalidate source handle
                 o.ptr = nullptr;
                 o.pool = nullptr;
             }
-            return *this; // <-- Crucial: Fixes compilation failure & UB
+            return *this;
         }
-        
-        // Disable copy semantics to prevent double-releasing resources
         Handle(const Handle&) = delete;
         Handle& operator=(const Handle&) = delete;
-
         std::vector<T>& get() { return *ptr; }
     };
-
     Handle acquire() {
-        std::unique_lock<std::mutex> lock(mtx);
+        std::unique_lock<std::mutex> lock(mtx); // FIXED ARTIFACT
         if(available.empty()) available.push(std::make_shared<std::vector<T>>(item_size));
         auto p = available.front(); available.pop(); return Handle(p, this);
     }
-
     void release(std::shared_ptr<std::vector<T>> p) {
-        std::unique_lock<std::mutex> lock(mtx); available.push(p);
+        std::unique_lock<std::mutex> lock(mtx); available.push(p); // FIXED ARTIFACT
     }
-
 };
 
 class ThreadSafeReader {
@@ -304,10 +282,9 @@ public:
     void close();
     uint64_t tellp() const;
     void seekp(uint64_t pos);
-    // Error query / control API
     bool has_error() const;
     std::string get_last_error() const;
-    void clear_error();   // reset error state
+    void clear_error();
 };
 
 class BlockScanner {
@@ -329,7 +306,7 @@ public:
     BlockScanner(ThreadSafeReader& reader, uint64_t file_size, bool use_aes, const std::vector<uint8_t>& aes_key, size_t win_size);
     ~BlockScanner();
     std::shared_ptr<BlockTask> extract_next_block(uint64_t& pos, uint64_t limit, const std::vector<uint32_t>& test_sizes);
-
+    
     struct ScanDiagnostics {
         uint64_t magic_candidates_found = 0;
         uint64_t passed_fast_rejection = 0;
@@ -347,7 +324,7 @@ public:
 };
 
 class ThreadPool {
-    std::vector<std::thread> workers;
+    std::vector<std::thread> workers; // FIXED ARTIFACT
     std::queue<std::function<void()>> tasks;
     std::mutex queue_mutex;
     std::condition_variable condition;
@@ -362,7 +339,7 @@ public:
         auto task_ptr = std::make_shared<std::packaged_task<return_type()>>(std::forward<F>(f));
         std::future<return_type> res = task_ptr->get_future();
         {
-            std::unique_lock<std::mutex> lock(queue_mutex);
+            std::unique_lock<std::mutex> lock(queue_mutex); // FIXED ARTIFACT
             if(stop) throw std::runtime_error("enqueue on stopped ThreadPool");
             tasks.emplace([task_ptr]() { (*task_ptr)(); });
         }
@@ -395,11 +372,9 @@ std::vector<int32_t> ParseLevels(const std::string& input);
 std::vector<uint8_t> ParseKey(const std::string& hex);
 void ResolveAESKey(std::vector<uint8_t>& aesKey, bool& useAES, const PreHeader& hdr);
 uint32_t GetOodleBlockSize(const uint8_t* hdr, size_t available_len, uint8_t& codec_out);
-
 int64_t CompressAndVerify(int32_t method, int32_t level, const uint8_t* src, uint32_t usize,
     const uint8_t* expected, uint32_t expected_size, std::vector<uint8_t>& temp_buf,
-    const OodleLZ_CompressOptions* opts = nullptr);
-
+    const OodleLZ_CompressOptions* opts, void* scratchMem, int64_t scratchSize);
 bool TryMatchBlock(const std::shared_ptr<BlockTask>& task,
     const std::vector<int32_t>& all_methods,
     const std::vector<int32_t>& all_levels,

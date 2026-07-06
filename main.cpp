@@ -11,7 +11,7 @@ int main(int argc, char** argv) {
     if (argc >= 2) {
         std::string first_arg = argv[1];
         if (first_arg == "-V" || first_arg == "--version") {
-            std::cout << "OodleForge v33.4\n"
+            std::cout << "OodleForge v34\n"
                       << "Advanced Multi-Method Archive Extraction & Reconstruction\n"
                       << "Build Date: " << __DATE__ << " " << __TIME__ << "\n"
                       << "Architecture: "
@@ -25,7 +25,7 @@ int main(int argc, char** argv) {
         }
         if (first_arg == "-h" || first_arg == "--help") {
             std::cout << "=================================================================================\n"
-                      << "  OODLEFORGE [v33.4] - Advanced Multi-Method Archive Extraction & Reconstruction\n"
+                      << "  OODLEFORGE [v34] - Advanced Multi-Method Archive Extraction & Reconstruction\n"
                       << "==================================================================================\n"
                       << "USAGE: oodleforge <operation> <input_file> [output_file] [options]\n"
                       << "OPERATIONS:\n"
@@ -115,8 +115,15 @@ int main(int argc, char** argv) {
     }
 
     Logger::Init(debug_mode);
-    std::vector<uint8_t> aesKey = ParseKey(keyHex);
-    bool useAES = !aesKey.empty() && std::any_of(aesKey.begin(), aesKey.end(), [](uint8_t x) { return x != 0; });
+    
+    std::vector<uint8_t> aesKey;
+    bool useAES = false;
+
+    // Only parse and validate the key if the user actually provided one via -k
+    if (!keyHex.empty()) {
+        aesKey = ParseKey(keyHex); // Will throw std::invalid_argument if length != 64
+        useAES = std::any_of(aesKey.begin(), aesKey.end(), [](uint8_t x) { return x != 0; });
+    }
 
     std::string op = argv[1];
     std::string input = argv[2];
@@ -129,12 +136,8 @@ int main(int argc, char** argv) {
 
   if (op == "e") {
         try {
-            // Extract the directory path from the output file path
             auto out_dir = std::filesystem::path(output).parent_path();
-            // If the path is just a filename (e.g., "out.oodle"), use current directory
             if (out_dir.empty()) out_dir = std::filesystem::current_path();
-            
-            // Check the available space
             auto space = std::filesystem::space(out_dir);
             if (space.available < 1024 * 1024 * 1024) {
                 std::cerr << "[FATAL] Insufficient disk space. At least 1GB free space is required." << std::endl;

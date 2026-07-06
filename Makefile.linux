@@ -1,10 +1,7 @@
-# Linux Makefile for OodleForge v33.4
-# Requires: liboo2core.so.9 (or liboo2core.so.8) in the same folder
-# Build: make
-
+# Linux Makefile for OodleForge v34 (Legendary Edition)
 CXX = g++
-CXXFLAGS = -std=c++17 -O3 -march=native -flto -Wall -Wextra -s
-INCLUDES = -I.  -Iaes 
+CXXFLAGS = -std=c++17 -O3 -march=x86-64 -mtune=generic -flto -Wall -Wextra -s
+INCLUDES = -I. -Iaes 
 LIBS = -lpthread -ldl -static-libgcc -static-libstdc++ -lz 
 
 TARGET = oodleforge-amd64

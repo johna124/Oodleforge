@@ -2,21 +2,28 @@
 #include <iomanip>
 #include <future>
 
-Result<int> RunReconstruct(const std::string& input_path, const std::string& output_path, bool verbose, int num_threads, std::vector<uint8_t>& aesKey, bool& useAES, uint32_t tradeoff_bytes, bool quantum_crc) {
+Result<int> RunReconstruct(const std::string& input_path, const std::string& output_path, bool verbose, int num_threads,
+                           std::vector<uint8_t>& aesKey, bool& useAES, uint32_t tradeoff_bytes, bool quantum_crc) {
     ThreadSafeReader reader(input_path);
     if (!reader.is_open()) {
         return Result<int>(ErrorCode::ERR_FILE_NOT_FOUND, "Failed to open target archive file: " + input_path);
     }
+
     uint64_t fsz = reader.get_size();
     if (fsz < sizeof(PreHeader)) {
         return Result<int>(ErrorCode::ERR_INVALID_MAGIC, "File is too small to be a valid archive.");
     }
+
     PreHeader hdr;
     reader.pread(reinterpret_cast<char*>(&hdr), sizeof(hdr), 0);
-    if (hdr.magic != 0x50524546 || hdr.version != 33) {
+
+    if (hdr.magic != 0x50524546 || hdr.version != 34) { // UPDATED TO V34
         return Result<int>(ErrorCode::ERR_INVALID_MAGIC, "Invalid archive magic or version mismatch.");
     }
+
     ResolveAESKey(aesKey, useAES, hdr);
+    tradeoff_bytes = hdr.space_speed_tradeoff_bytes;
+    quantum_crc = hdr.quantum_crc != 0;
 
     if (hdr.block_count > Config::MAX_BLOCKS) {
         return Result<int>(ErrorCode::ERR_INVALID_MAGIC,
@@ -28,6 +35,7 @@ Result<int> RunReconstruct(const std::string& input_path, const std::string& out
     if (fsz < sizeof(PreHeader) + blocks_meta_size) {
         return Result<int>(ErrorCode::ERR_INVALID_MAGIC, "Archive metadata exceeds file size.");
     }
+
     reader.pread(reinterpret_cast<char*>(blocks.data()), blocks_meta_size, fsz - blocks_meta_size);
 
     std::cout << "[REC] Reconstructing " << hdr.original_size / 1024 / 1024 << " MB (" << hdr.block_count << " blocks) using " << num_threads << " threads." << std::endl;
@@ -37,7 +45,17 @@ Result<int> RunReconstruct(const std::string& input_path, const std::string& out
         return Result<int>(ErrorCode::ERR_FILE_NOT_FOUND, "Failed to open rebuild file.");
     }
 
-    AESContextPtr aesCtxE = useAES ? AESContextPtr(AES_Context_Create(aesKey.data())) : nullptr;
+    AESContextPtr aesCtxE;
+    if (useAES) {
+        if (aesKey.size() != 32) {
+            return Result<int>(ErrorCode::ERR_INVALID_ARGUMENT, "AES key must be 32 bytes.");
+        }
+        aesCtxE = AESContextPtr(AES_Context_Create(aesKey.data()));
+        if (!aesCtxE) {
+            return Result<int>(ErrorCode::ERR_UNKNOWN, "Failed to create AES encryption context.");
+        }
+    }
+
     ThreadPool pool(num_threads);
     ObjectPool<char> gap_pool(num_threads * 2, Config::GAP_POOL_CHUNK);
     UI ui(hdr.original_size, hdr.block_count, verbose);
@@ -61,14 +79,13 @@ Result<int> RunReconstruct(const std::string& input_path, const std::string& out
             std::cerr << "\n[FATAL] " << task->error_msg << std::endl;
             return false;
         }
-        
+
         try {
             if (task->gap_len > 0) {
                 if (!write_gap(reader, fast_out, gap_pool, task->gap_archive_offset, task->gap_len)) {
                     std::cerr << "[FATAL] Failed to write gap data.\n";
                     return false;
                 }
-                // [FIX] Check error after writing gap
                 if (fast_out.has_error()) {
                     std::cerr << "[FATAL] Gap write failed: " << fast_out.get_last_error() << "\n";
                     return false;
@@ -78,29 +95,21 @@ Result<int> RunReconstruct(const std::string& input_path, const std::string& out
             uint8_t* data_ptr = task->b.exact_match ? task->compressed_out.data() : task->block_data_in.data();
             size_t data_len = task->b.exact_match ? task->compressed_out.size() : task->b.stored_size;
 
-            // AES encryption truncation fix
-            if (useAES && task->b.was_encrypted) {
+            if (useAES && task->b.was_encrypted && task->b.exact_match) {
                 size_t aes_len = (data_len + 15) & ~15;
-    
-                if (task->b.exact_match && task->compressed_out.size() < aes_len) {
+                if (task->compressed_out.size() < aes_len) {
                     task->compressed_out.resize(aes_len, 0);
                     data_ptr = task->compressed_out.data();
-                } else if (!task->b.exact_match && task->block_data_in.size() < aes_len) {
-                    task->block_data_in.resize(aes_len, 0);
-                    data_ptr = task->block_data_in.data();
                 }
-                
                 AES_Context_Encrypt(aesCtxE.get(), data_ptr, static_cast<uint32_t>(aes_len));
                 data_len = aes_len;
             }
 
             fast_out.write(reinterpret_cast<const char*>(data_ptr), data_len);
-            // [FIX] Check error after write
             if (fast_out.has_error()) {
                 std::cerr << "[FATAL] Write failed: " << fast_out.get_last_error() << "\n";
                 return false;
             }
-            
         } catch (const std::exception& e) {
             std::cerr << "\n[FATAL] File I/O Error: " << e.what() << std::endl;
             return false;
@@ -119,6 +128,15 @@ Result<int> RunReconstruct(const std::string& input_path, const std::string& out
         task->gap_archive_offset = archive_offset;
         archive_offset += gap;
         task->o_pos_start = original_offset;
+
+        if (b.exact_match) {
+            if (b.stored_size < sizeof(BlockHeader) + b.decompressed_size) {
+                task->fatal_error = true;
+                task->error_msg = "Invalid stored_size for exact-match block: " + std::to_string(b.stored_size);
+                fatal_abort = true;
+                break;
+            }
+        }
 
         task->block_data_in.resize(b.stored_size);
         if (reader.pread(reinterpret_cast<char*>(task->block_data_in.data()), b.stored_size, archive_offset) != b.stored_size) {
@@ -143,24 +161,28 @@ Result<int> RunReconstruct(const std::string& input_path, const std::string& out
                     return task;
                 }
 
-                size_t safe_size = std::max<size_t>(
-                    static_cast<size_t>(task->b.decompressed_size) * 2,
-                    1024ULL * 1024ULL
-                ) + 4096;
+                // FIX 2 & 3: Thread-local buffers to prevent OOM and internal Oodle mallocs
+                thread_local std::vector<uint8_t> safe_temp;
+                thread_local std::vector<uint8_t> scratch_mem;
+                const size_t SCRATCH_SIZE = 8 * 1024 * 1024;
+                if (scratch_mem.size() < SCRATCH_SIZE) scratch_mem.resize(SCRATCH_SIZE);
 
-                std::vector<uint8_t> safe_temp(safe_size);
+                size_t safe_bound = SafeCompressBound(task->b.decompressed_size);
+                if (safe_temp.size() < safe_bound) safe_temp.resize(safe_bound);
+
                 int32_t rec_method = task->b.compressor & 0xFF;
                 int32_t rec_level = task->b.compressor >> 8;
 
+                // Pass scratch memory to Oodle
                 int64_t comp_res = OodleLZ_Compress(
                     rec_method, task->block_data_in.data() + sizeof(BlockHeader),
                     task->b.decompressed_size, safe_temp.data(), rec_level,
-                    &opts, nullptr, nullptr, nullptr, 0
+                    &opts, nullptr, nullptr, scratch_mem.data(), scratch_mem.size()
                 );
 
-                if (comp_res <= 0) {
+                if (comp_res <= 0 || static_cast<size_t>(comp_res) > safe_temp.size()) {
                     task->fatal_error = true;
-                    task->error_msg = "Oodle Re-compression failed.";
+                    task->error_msg = "Oodle Re-compression failed or output overflow.";
                     return task;
                 }
 
@@ -194,12 +216,13 @@ Result<int> RunReconstruct(const std::string& input_path, const std::string& out
                 break;
             }
             dec_queue.pop();
+
             if (!process_and_write(completed)) {
                 fatal_abort = true;
                 break;
             }
-            processed_blocks++;
 
+            processed_blocks++;
             auto now = std::chrono::steady_clock::now();
             if (std::chrono::duration_cast<std::chrono::milliseconds>(now - last_ui_time).count() >= 500) {
                 ui.set_stats(dec_matches.load(), dec_fails.load());
@@ -245,7 +268,7 @@ Result<int> RunReconstruct(const std::string& input_path, const std::string& out
     } catch (const std::exception& e) {
         return Result<int>(ErrorCode::ERR_UNKNOWN, std::string("Final file write/flush failed: ") + e.what());
     }
-    
+
     std::cout << std::endl << "--- Reconstruction Performance ---" << std::endl
               << "Restored Architecture Size: " << hdr.original_size / 1024.0 / 1024.0 << " MB" << std::endl
               << "Exact Matches: " << dec_matches.load() << " | Full Copies: " << dec_fails.load() << std::endl

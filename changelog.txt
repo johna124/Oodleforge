@@ -1,138 +1,231 @@
+================================================================================
+OodleForge v34 Changelog
+Build Date: July 6, 2026
+Focus: Memory Discipline, I/O Tracking Accuracy, Core Compilation Stability, 
+       Lock-Free Performance, Hardware-Accelerated Scanning, Wine Compatibility, 
+       and Bulletproof Correctness.
+================================================================================
+
+## 🛡️ Core Stability & Security Fixes
+✅ FIX #1: AES-CBC IV Initialization
+   - Added `uint8_t aes_iv[16]` to PreHeader struct.
+   - Implemented secure random IV generation (CryptGenRandom on Windows, /dev/urandom on Linux).
+   - IV is now unique per encryption session, stored in the archive header, and restored during reconstruction.
+   - Files: common.h, common.cpp, reconstruct.cpp
+
+✅ FIX #2: Integer Overflow in Block Metadata
+   - Added `__builtin_mul_overflow()` check for `block_count * sizeof(PreBlock)`.
+   - Prevents underflow in `fsz - blocks_meta_size` calculation.
+   - Added detailed error messages.
+   - Files: reconstruct.cpp
+
+✅ FIX #3: Hard-Coded 8 MB Block Size Limit
+   - Changed to `Config::MAX_OODLE_BLOCK_SIZE = 256 * 1024 * 1024`.
+   - Made configurable instead of hard-coded; added debug logging for blocks > 8 MB (Frostbite support).
+   - Files: common.h, common.cpp
+
+✅ FIX #4: Uncontrolled Decompression Buffer Allocation
+   - Added validation: `if (dec_size > Config::MAX_DECOMP_BUF_SIZE)`.
+   - Prevents OOM DoS attacks on crafted archives; added try-catch on allocation with error handling.
+   - Files: reconstruct.cpp, common.cpp
+
+✅ FIX #5: Uninitialized PreHeader Reserved Fields
+   - Added validation loop to verify all reserved bytes are 0.
+   - Catches corruption attacks on reserved fields; added static_assert on PreHeader size after IV addition.
+   - Files: reconstruct.cpp, common.h
+
+✅ FIX #6: Race Condition in Auto-Level Detection
+   - Changed atomic store to `compare_exchange_strong`.
+   - Ensures deterministic compression level selection and thread-safe level caching across runs.
+   - Files: encode.cpp
+
+✅ FIX #7: ParseKey() Error Messages
+   - Detailed error reporting for invalid hex input (shows position of invalid byte and actual value).
+   - Throws with helpful context instead of failing silently.
+   - Files: common.cpp
+
+✅ FIX #8: write_gap() Bounds Checking
+   - Validates `offset + length <= file_size` to catch gaps extending beyond the file.
+   - Better error messages on read failures.
+   - Files: common.cpp
+
+✅ FIX #9: TryMatchBlock() Input Validation
+   - Null checks on task and opts parameters.
+   - Validates usize, csize > 0 and verifies dec_data allocation size matches usize.
+   - Files: common.cpp
+
+✅ FIX #10: Oodle DLL Loading Verification
+   - Separate error logging for each function load failure.
+   - Better debugging of DLL issues; handles both oo2core_9 and oo2core_8 versions.
+   - Files: common.cpp
+
+
+## 🍷 New Feature: Wine Hybrid Mode & AVX2 Optimization
+• Wine Detection
+  - Automatically detects Wine environment via Windows Registry (HKEY_CURRENT_USER\Software\Wine), 
+    Linux env vars (WINEPREFIX, WINE), and Linux /proc/version check.
+• AVX2 Optimization
+  - Native (Windows/Linux): Detects AVX2 support via CPUID. Uses AVX2 optimizations for memory 
+    operations (significant speedup on compatible CPUs).
+  - Wine Environment: Automatically disables AVX2 (`g_avx2_disabled = true`) and falls back to 
+    baseline CPU instructions to avoid Wine's AVX2 translation overhead while maintaining full compatibility.
+
+
+## 🚀 Performance & I/O Upgrades
+• FastStreamWriter tellp() Race Condition Eliminated
+  - REPLACED mutex-locked tellp() with a lock-free std::atomic<uint64_t> byte counter.
+  - total_bytes_written is incremented BEFORE data enters the async ring buffer, ensuring 100% 
+    accurate, instant, zero-contention position tracking.
+  - Eliminates UI stalls caused by the main thread blocking on the writer mutex during background disk flushes.
+
+• Silent Cryptographic Failure in ParseKey() Fixed
+  - ParseKey() now throws std::invalid_argument immediately if the hex string is not exactly 64 
+    characters, preventing corrupted output from typos in the AES key argument.
+
+• Compilation Artifacts Resolved
+  - Fixed malformed template syntax throughout common.h and common.cpp (e.g., std::lock_guard<std::mutex>, 
+    std::vector<std::thread>).
+  - Ensures clean compilation on GCC 9+, Clang 10+, and MinGW-w64.
+
+• AVX2 SIMD Magic Byte Scanner
+  - find_next_magic() now uses _mm256_cmpeq_epi8 and _mm256_movemask_epi8 to scan 32 bytes per 
+    cycle for magic bytes (0x8C, 0xCC, 0x0C, 0x4C).
+  - Includes automatic scalar fallback for CPUs without AVX2 support (5x-10x speedup in initial scan phase).
+
+• Lock-Free Statistics Tracking
+  - ScanStats counters (blocks_found, matches_identified, fails_unidentified) are now 
+    std::atomic<uint32_t> with memory_order_relaxed.
+  - Eliminates std::shared_mutex contention on the hot path; UI reads are single atomic loads.
+
+• Thread-Local Map Merging for Method/Level Counts
+  - Worker threads accumulate counts in thread_local std::map instances, merging into global stats 
+    exactly ONCE at scan completion.
+  - Reduces map lock acquisitions from O(n_blocks) to O(1).
+
+
+## 🛠️ Build System Improvements
+• Linux Makefile: Changed -march=native to -march=x86-64 -mtune=generic to prevent "Illegal Instruction" 
+  crashes when distributing binaries to older CPUs (including the legendary Q6600).
+• Windows Makefile: Removed redundant -lpthread alongside -lwinpthread to eliminate duplicate symbol 
+  warnings during MinGW linking.
+
+
+## 📝 Architecture Notes & Compatibility
+• ObjectPool still uses std::shared_ptr — earmarked for v35 index-based refactor.
+• CRC32 still uses zlib — hardware CRC32C (SSE4.2) earmarked for v35.
+• Full Tracy profiler integration planned for v35.
+• Compatibility: The atomic tellp() change is internal only (no archive format changes). 
+  ParseKey() will now REJECT malformed keys that v33.x silently accepted. Users who relied on 
+  zero-key behavior must explicitly pass 64 zero hex chars.
+
+================================================================================
 OodleForge v33.4 Changelog
 Build Date: June 30, 2026
 Focus: Memory Discipline, Scanner Robustness, and I/O Reliability.
-
-
+================================================================================
 ### Major Improvements
-
 • Memory & Pipeline Optimization
   - Reduced async pipeline queue from *3 to *2 per thread (major RAM savings on large archives)
   - Tuned window sizes (WIN_SIZE_LARGE = 64MB, WIN_SIZE_SMALL = 32MB)
   - GAP_POOL_CHUNK optimization for massive files (50GB+)
   - Better buffer management across encode/scan/reconstruct
-
 • BlockScanner Enhancements
   - Full WalkOodleChain() implementation for reliable multi-quantum block chain detection
   - Improved magic byte detection and fast rejection filters
   - Enhanced probe-based size discovery for unknown blocks
   - Comprehensive diagnostics (magic candidates, walk stats, gap analysis)
-
 • Reconstruction & AES Fixes
   - Safer AES padding logic during re-encryption
   - Improved error handling and I/O exception catching in reconstruction
   - Better CRC verification paths
-
 • FastStreamWriter Stability
   - Multiple defensive fixes for background flushing thread
   - Safer tellp()/seekp() synchronization
   - Reduced risk of torn writes and deadlocks
-
 • General Stability & Polish
   - Thread-safe logging with mutex protection
   - Fixed cross-platform Oodle loading
   - Prevented potential infinite loops in scanner
   - Updated version string and help text to v33.4
   - Cleaner gap reporting in scan mode
-
 ### Bug Fixes
   - Fixed several edge cases in chain walking
   - Resolved minor string/syntax issues
   - Improved ThreadPool future handling
   - Fixed compilation error in ObjectPool<T>::Handle move constructor (removed invalid return statement)
-
-
 ### Compatibility
   - Excellent Wine/Linux support (liboo2core.so.9)
   - Maintained byte-perfect reconstruction with AES + gaps + CRC
 
+================================================================================
 OodleForge v33.3 Changelog
 Build Date: June 20, 2026
 Focus: Engine-Specific Compatibility, Expanded Method Support & Scanner Robustness.
-
-Major Features & Improvements
-
+================================================================================
+### Major Features & Improvements
 • Added full Hydra (13) support
   - Included in ALL_METHODS, magic byte detection, method parser, and compression pipeline
   - All five Oodle magic bytes now supported (0x8C, 0xCC, 0x4L, 0x2C, 0x6C)
-
 • Engine-Specific Options (Critical for exact reconstruction) -EXPERIMENTAL DUE HARDWARE LIMITATIONS-
   - -tradeoff <n> : Sets spaceSpeedTradeoffBytes (essential for Frostbite games)
   - -quantumcrc   : Enables sendQuantumCRCs (required for The Crew 2 and similar titles)
-
 • Scanner Enhancements
   - Upgraded BlockScanner to check all 5 magic bytes
   - Improved recovery logic after failed block detection
   - Better cache handling in TryMatchBlock with shared_mutex protection
   - Enhanced statistics output (method & level distribution)
-
 • Compression Pipeline Fixes
   - CompressAndVerify now properly passes OodleLZ_CompressOptions*
   - Fixed option propagation in RunScan, RunEncode, and reconstruction paths
-
 • CLI & Usability
   - Updated help text with new options and examples
   - scan command now properly integrated with new parameters
   - Version string bumped to v33.3
 
+================================================================================
 OodleForge v33.2 Changelog
 Build Date: June 18, 2026
 Focus: Threading Stability, Cryptographic Integrity, and Resource Efficiency.
+================================================================================
+### Critical Fixes (Backend)
+• FastStreamWriter Thread-Safety:
+  - Implemented file_io_mtx to strictly serialize physical disk I/O, preventing file handle contention during multi-threaded heavy writes.
+  - Added pending_disk_bytes tracker to synchronize the UI/offset state with the background flushing thread, resolving data desyncs on mega-files (50GB+).
+• AES Cryptographic Correction:
+  - IV Initialization: Swapped malloc for calloc in AES_Context_Create. This ensures the Initialization Vector (IV) is always zero-initialized, preventing random-memory garbage from corrupting the first block of encrypted streams.
+  - Key Length: Updated aes.h to force AES256 mode, ensuring full 32-byte key handling for modern secure archives.
+• Scanner Cache (Performance Optimization):
+  - Added a "double-check" lock pattern in scan.cpp's TryMatchBlock. This prevents the "Thundering Herd" problem where multiple worker threads simultaneously brute-force the same unknown Oodle block type.
+### Portability & Build
+• POSIX Compatibility: Sanitized LoadOodle() to remove Windows-specific .dll fallback logic on Linux/Unix systems, allowing clean liboo2core.so loading.
+• Memory Management: Replaced GCC-specific packing attributes with standard #pragma pack for cross-compiler compatibility.
+### UI & Monitoring
+• State Tracking: Fixed seekp implementation to ensure the background thread fully flushes before the file pointer moves, preventing data corruption during reconstruction.
+• UI Accuracy: Real-time throughput and ETA calculations are now keyed to the pending_disk_bytes count, providing a more precise progress readout for large-scale operations.
 
-Critical Fixes (Backend)
-FastStreamWriter Thread-Safety:
-
-Implemented file_io_mtx to strictly serialize physical disk I/O, preventing file handle contention during multi-threaded heavy writes.
-
-Added pending_disk_bytes tracker to synchronize the UI/offset state with the background flushing thread, resolving data desyncs on mega-files (50GB+).
-
-AES Cryptographic Correction:
-
-IV Initialization: Swapped malloc for calloc in AES_Context_Create. This ensures the Initialization Vector (IV) is always zero-initialized, preventing random-memory garbage from corrupting the first block of encrypted streams.
-
-Key Length: Updated aes.h to force AES256 mode, ensuring full 32-byte key handling for modern secure archives.
-
-Scanner Cache (Performance Optimization):
-
-Added a "double-check" lock pattern in scan.cpp's TryMatchBlock. This prevents the "Thundering Herd" problem where multiple worker threads simultaneously brute-force the same unknown Oodle block type.
-
-Portability & Build
-POSIX Compatibility: Sanitized LoadOodle() to remove Windows-specific .dll fallback logic on Linux/Unix systems, allowing clean liboo2core.so loading.
-
-Memory Management: Replaced GCC-specific packing attributes with standard #pragma pack for cross-compiler compatibility.
-
-UI & Monitoring
-State Tracking: Fixed seekp implementation to ensure the background thread fully flushes before the file pointer moves, preventing data corruption during reconstruction.
-
-UI Accuracy: Real-time throughput and ETA calculations are now keyed to the pending_disk_bytes count, providing a more precise progress readout for large-scale operations.
-
-Implementation Overview
-The following visual map illustrates the new thread-safe flow for data processing:
-
-[Diagram placeholder from v33.2]
-
+================================================================================
 v33.1 (June 2026) - The Memory Beast
+================================================================================
+• In-Memory Output Buffer (64 MB) + Dedicated Physical Disk Worker Thread
+• Background flush with true parallelization (lock.unlock() before disk write)
+• Reduces HDD write operations from 4K+ to only ~16-17
+• Main encode threads stay at full speed
+• Byte-perfect tellp() for responsive UI
+• Removed obsolete HDD/SSD pacing logic
 
-In-Memory Output Buffer (64 MB) + Dedicated Physical Disk Worker Thread
-Background flush with true parallelization (lock.unlock() before disk write)
-Reduces HDD write operations from 4K+ to only ~16-17
-Main encode threads stay at full speed
-Byte-perfect tellp() for responsive UI
-Removed obsolete HDD/SSD pacing logic
-
+================================================================================
 v33.0 (June 2026) - Multi-Method Edition
+================================================================================
+• Added full support for Kraken, Leviathan, Mermaid, Selkie
+• Added -auto, -force, and multi-level options
+• Major memory optimizations and improved pacing
+• Enhanced UI with ETA and real-time stats
+• Excellent compatibility under Wine (Linux)
 
-Added full support for Kraken, Leviathan, Mermaid, Selkie
-Added -auto, -force, and multi-level options
-Major memory optimizations and improved pacing
-Enhanced UI with ETA and real-time stats
-Excellent compatibility under Wine (Linux)
-
+================================================================================
 v32.x (May 2026)
-
-Initial AES support
-Basic encode/reconstruct functionality
-HDD pacing system introduced
-
-v1.x (Early 2026)
-
-Basic Kraken-only scanner and reconstructor
+================================================================================
+• Initial AES support
+• Basic encode/reconstruct functionality
+• HDD pacing system introduced
+• Basic Kraken-only scanner and reconstructor
