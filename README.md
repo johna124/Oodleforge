@@ -60,7 +60,7 @@ Born from 45 days of intense development on legacy hardware (Core 2 Quad Q6600, 
 | **Version** | 34 (PREF! enabled) |
 
 ---
-<img src="https://github.com/johna124/Oodleforge/blob/main/33_4.jpg"/>
+<img src="https://raw.githubusercontent.com/johna124/Oodleforge/refs/heads/main/v34.png"/>
 
 
 ## 🎲 The 45-Day Campaign
