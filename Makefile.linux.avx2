@@ -4,7 +4,7 @@ CXXFLAGS = -std=c++17 -O3 -march=x86-64-v3 -mtune=generic -flto -Wall -Wextra -s
 INCLUDES = -I. -Iaes 
 LIBS = -lpthread -ldl -static-libgcc -static-libstdc++ -lz 
 
-TARGET = oodleforge-amd64-av2
+TARGET = oodleforge-amd64-avx2
 SOURCES = main.cpp common.cpp scan.cpp encode.cpp reconstruct.cpp aes.c
 
 all: $(TARGET)
