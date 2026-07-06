@@ -149,14 +149,20 @@ This tool lets you:
 ### Build
 
 **Windows (MinGW64):**
+
 make -f Make.windows (for legacy potato)
+
 or 
+
 make -f Make.windows.avx2
 
 **Linux (native):**
+
 make -f Make.linux (for legacy potato)
-or 
+
+or
 make -f Make.linux.avx2
+
 ---
 
 ## 💻 Usage
