@@ -1,10 +1,8 @@
 <div align="center">
 
-<img src="https://github.com/johna124/Oodleforge/blob/main/assets/HERO-and-POSTERS/liberty-poster.png" alt="drawing" style="width:600px;"/>
+# 🦑 OodleForge v34
 
-# 🦑 OodleForge v33.4 — The Eternal Quartet
-
-### *Exact byte-for-byte reconstruction. 11x faster than Wine. 99.98% detection.*
+### *Exact byte-for-byte reconstruction. 11x faster than Wine.*
 ### *"The .so is dead. The .dlls are immortal."*
 
 **Advanced Multi-Method OodleLZ Archive Engine | v33.4 Scanner Robustness • Memory Discipline • I/O Reliability**
@@ -20,9 +18,10 @@
 
 </div>
 
+<img src="https://raw.githubusercontent.com/johna124/Oodleforge/main/banner2.jpg" width="600" alt="Oodleforge banner">
 ---
 
-**34 Days on Potato Hardware • 11 Days of Upgrade Madness • 4 AI Warriors • The Kraken is Slain**
+**45 Days on Potato Hardware • 14 Days of Upgrade Madness • 4 AI Warriors • The Kraken is Slain**
 
 [The original diary](https://github.com/johna124/Oodleforge/blob/main/history.txt) started on a 2007 Q6600 + HD 6450 with four LLMs (Qwen, Claude, Grok, Gemini) fighting for dominance.  
 The 11-day upgrade turned it into a production monster:  
@@ -54,13 +53,11 @@ Born from 45 days of intense development on legacy hardware (Core 2 Quad Q6600, 
 | Feature | Specification |
 |---------|---------------|
 | **Reconstruction** | Exact byte-for-byte fidelity |
-| **Detection Rate** | 99.98% (Dynamic Scanner) |
 | **Performance** | 11x faster than Wine |
 | **Cryptography** | AES-256-CBC encryption (per-block) |
 | **Memory Model** | "Memory Beast" — 64MB ring buffer |
-| **Blocks Processed** | 2078+ per cycle |
 | **Methods** | Full Kraken, Leviathan, Mermaid, Selkie, Hydra |
-| **Version** | 33.4 (PREF! enabled) |
+| **Version** | 34 (PREF! enabled) |
 
 ---
 <img src="https://github.com/johna124/Oodleforge/blob/main/33_4.jpg"/>
@@ -195,8 +192,8 @@ oodleforge.exe r archive.oodle restored.bin
 ---
 
 ## 📜 Version History
-
-- **v33.4** — Scanner Robustness, Advanced Block Detection, and Critical Buffer Fixes
+- **v34** (July 2026) Memory Discipline, I/O Tracking Accuracy, Core Compilation Stability, Lock-Free Performance, Hardware-Accelerated Scanning, Wine Compatibility fixed for AVX2, and Bulletproof Correctness.
+- **v33.4** (June 2026) Scanner Robustness, Advanced Block Detection, and Critical Buffer Fixes
 - **v33.3** (June 2026) — Engine-Specific Compatibility, Expanded Method Support & Scanner Robustness
 - **v33.2** (June 2026) — Threading Stability, Cryptographic Integrity, and Resource Efficiency
 - **v33.1** (June 2026) — *The Memory Beast* — Async Double-Buffered I/O + major performance improvements + pacing removed
