@@ -120,6 +120,16 @@ Result<int> RunReconstruct(const std::string& input_path, const std::string& out
     for (uint32_t i = 0; i < hdr.block_count; ++i) {
         if (fatal_abort) break;
         const auto& b = blocks[i];
+
+        // [FIX 2]: Potential uint64_t Underflow via Malicious Archive Metadata
+        // Guards against corrupted or manipulated archives where offsets move backward, 
+        // preventing massive uint64_t underflows that cause out-of-bounds reads/OOMs.
+        if (b.original_offset < original_offset) {
+            std::cerr << "\n[FATAL] Malformed archive: block offsets overlap or are out of order." << std::endl;
+            fatal_abort = true;
+            break;
+        }
+        
         uint64_t gap = b.original_offset - original_offset;
 
         auto task = std::make_shared<DecTask>();
@@ -161,7 +171,17 @@ Result<int> RunReconstruct(const std::string& input_path, const std::string& out
                     return task;
                 }
 
-                // FIX 2 & 3: Thread-local buffers to prevent OOM and internal Oodle mallocs
+                // [FIX 1]: Missing CRC Integrity Verification for Exact-Match Blocks
+                // Ensures the uncompressed exact-match data wasn't corrupted on disk 
+                // before we feed it into OodleLZ_Compress, preventing silent output corruption.
+                uint32_t crc_stored = CalculateCRC32(task->block_data_in.data(), task->b.stored_size);
+                if (crc_stored != task->b.crc32) {
+                    task->fatal_error = true;
+                    task->error_msg = "CRC32 Integrity Check Failed for exact-match block data.";
+                    return task;
+                }
+
+                // Thread-local buffers to prevent OOM and internal Oodle mallocs
                 thread_local std::vector<uint8_t> safe_temp;
                 thread_local std::vector<uint8_t> scratch_mem;
                 const size_t SCRATCH_SIZE = 8 * 1024 * 1024;
@@ -183,6 +203,14 @@ Result<int> RunReconstruct(const std::string& input_path, const std::string& out
                 if (comp_res <= 0 || static_cast<size_t>(comp_res) > safe_temp.size()) {
                     task->fatal_error = true;
                     task->error_msg = "Oodle Re-compression failed or output overflow.";
+                    return task;
+                }
+
+                // [FIX 3]: Deterministic Size Enforcement on Re-Compression
+                // Explicitly validates that the resulting compression perfectly matches the originally recorded layout.
+                if (comp_res != static_cast<int64_t>(task->b.original_compressed_size)) {
+                    task->fatal_error = true;
+                    task->error_msg = "Oodle Re-compression size mismatch. Stream is non-deterministic or corrupted.";
                     return task;
                 }
 

@@ -59,6 +59,27 @@ Focus: Memory Discipline, I/O Tracking Accuracy, Core Compilation Stability,
    - Better debugging of DLL issues; handles both oo2core_9 and oo2core_8 versions.
    - Files: common.cpp
 
+✅ FIX #11: tellp() Desync during seekp()
+
+Identified and resolved a critical desynchronization where seekp(0) would move the file cursor without resetting the internal atomic byte counter.
+
+Fixed by explicitly calling pImpl_->total_bytes_written.store(pos) within the seekp() implementation to ensure tellp() always returns the correct, non-stale offset for lock-free reporting.
+
+Files: common.cpp
+
+✅ FIX #12: ScanStats Contention & Dead Weight
+
+Pruned redundant std::map objects and map_mutex from the ScanStats struct.
+
+Transformed ScanStats into a pure, lock-free, zero-overhead atomic container, ensuring scan operations maintain maximum throughput without lock contention on the hot path.
+
+Files: common.h
+
+🚀 Performance & I/O Upgrades
+• Atomic tellp() Persistence
+
+The transition to std::atomic<uint64_t> for byte counting is now fully robust; all seek operations are now captured in the atomic state, eliminating potential UI/stats stalls during archive header reconstruction.
+
 
 ## 🍷 New Feature: Wine Hybrid Mode & AVX2 Optimization
 • Wine Detection

@@ -44,7 +44,7 @@ void AES_Context_Encrypt(void* ctx, uint8_t* buf, uint32_t len) {
 }
 
 OodleLZ_Decompress_t* OodleLZ_Decompress = nullptr;
-OodleLZ_Compress_t*   OodleLZ_Compress   = nullptr;
+OodleLZ_Compress_t* OodleLZ_Compress   = nullptr;
 
 bool LoadOodle() {
 #ifdef _WIN32
@@ -241,7 +241,6 @@ struct FastStreamWriter::Impl {
     std::atomic<bool> io_error;
     std::string last_error;
     
-    // FIX: Atomic byte counter for lock-free tellp()
     std::atomic<uint64_t> total_bytes_written{0};
 
     Impl(size_t buf_sz = 32 * 1024 * 1024)
@@ -269,7 +268,6 @@ struct FastStreamWriter::Impl {
     void write(const char* data, size_t len) {
         if (io_error.load(std::memory_order_acquire)) return;
         
-        // FIX: Increment atomic counter BEFORE locking. Lock-free and instant.
         total_bytes_written.fetch_add(len, std::memory_order_relaxed);
         
         std::unique_lock<std::mutex> lock(mtx);
@@ -337,7 +335,7 @@ struct FastStreamWriter::Impl {
                 if (!disk_buf.empty()) {
                     file.write(disk_buf.data(), disk_buf.size());
                     if (file.bad()) {
-                        std::lock_guard<std::mutex> err_lock(mtx); // FIXED ARTIFACT
+                        std::lock_guard<std::mutex> err_lock(mtx);
                         last_error = "Disk write failed. Disk full or hardware fault detected.";
                         io_error.store(true, std::memory_order_release);
                         done = true;
@@ -362,17 +360,16 @@ void FastStreamWriter::close() { pImpl_->close(); }
 bool FastStreamWriter::has_error() const { return pImpl_->io_error.load(std::memory_order_acquire); }
 
 std::string FastStreamWriter::get_last_error() const {
-    std::lock_guard<std::mutex> lock(pImpl_->mtx); // FIXED ARTIFACT
+    std::lock_guard<std::mutex> lock(pImpl_->mtx);
     return pImpl_->last_error;
 }
 
 void FastStreamWriter::clear_error() {
     pImpl_->io_error.store(false, std::memory_order_release);
-    std::lock_guard<std::mutex> lock(pImpl_->mtx); // FIXED ARTIFACT
+    std::lock_guard<std::mutex> lock(pImpl_->mtx);
     pImpl_->last_error.clear();
 }
 
-// FIX: tellp() is now 100% lock-free, instant, and accurate
 uint64_t FastStreamWriter::tellp() const {
     return pImpl_->total_bytes_written.load(std::memory_order_relaxed);
 }
@@ -395,9 +392,14 @@ void FastStreamWriter::seekp(uint64_t pos) {
     });
     if (pImpl_->io_error.load(std::memory_order_acquire)) return;
     pImpl_->check_io();
+    
     pImpl_->file.clear();
     pImpl_->file.seekp(static_cast<std::streamoff>(pos));
-    if (!pImpl_->file.good()) {
+    
+    // [FIX] Update atomic counter on seek to ensure lock-free tellp() stays perfectly accurate.
+    if (pImpl_->file.good()) {
+        pImpl_->total_bytes_written.store(pos, std::memory_order_relaxed);
+    } else {
         pImpl_->last_error = "seekp() failed at offset " + std::to_string(pos);
         pImpl_->io_error.store(true, std::memory_order_release);
         pImpl_->cv.notify_all();
@@ -451,7 +453,6 @@ bool BlockScanner::ensure_window(uint64_t pos, size_t needed) {
     return win_len_ > 0;
 }
 
-// FIX: AVX2 SIMD Magic Byte Scanner
 bool BlockScanner::find_next_magic(uint64_t& pos, uint64_t limit) {
     while (pos < limit && pos < file_size_) {
         if (!ensure_window(pos, 16)) return false;
@@ -491,7 +492,6 @@ bool BlockScanner::find_next_magic(uint64_t& pos, uint64_t limit) {
             }
         }
 #else
-        // Fallback scalar
         for (size_t j = 0; j < max_check; j++) {
             uint8_t b = search_start[j];
             if (b == 0x8C || b == 0xCC || b == 0x0C || b == 0x4C) {
@@ -836,7 +836,6 @@ std::vector<int32_t> ParseLevels(const std::string& input) {
     return levels;
 }
 
-// FIX: No more silent failures. Throws immediately on bad input.
 std::vector<uint8_t> ParseKey(const std::string& hex) {
     if (hex.length() != 64) {
         throw std::invalid_argument("AES key must be exactly 64 hex characters.");

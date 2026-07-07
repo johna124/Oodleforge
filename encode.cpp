@@ -54,7 +54,6 @@ Result<int> RunEncode(const std::string& input_path, const std::string& output_p
         return Result<int>(ErrorCode::ERR_UNKNOWN, "Initial file structure setup failed: " + std::string(e.what()));
     }
 
-    ThreadPool pool(num_threads);
     UI ui(fSize, 0, verbose);
     BlockScanner scanner(reader, fSize, useAES, aesKey, Config::WIN_SIZE_LARGE);
 
@@ -77,6 +76,12 @@ Result<int> RunEncode(const std::string& input_path, const std::string& output_p
     opts.sendQuantumCRCs = quantum_crc ? 1 : 0;
 
     std::atomic<bool> fatal_io_error{false};
+
+    // [FIX: Destructor Order / Use-After-Free Prevention]
+    // Initializing the ThreadPool AFTER all reference-captured structures (like opts and gap_pool).
+    // This guarantees that if an early exit happens, the ThreadPool is destroyed FIRST,
+    // safely joining background worker threads before the structures they reference are cleared from memory.
+    ThreadPool pool(num_threads);
 
     auto process_single_task = [&](std::shared_ptr<BlockTask> task) -> bool {
         try {
@@ -159,10 +164,9 @@ Result<int> RunEncode(const std::string& input_path, const std::string& output_p
         if (!task) break;
 
         pipeline.push_back(pool.enqueue([&effective_m_ids, opt_levels, opt_auto, opt_force, &detected_auto_level_by_method, &opts, task]() {
-            // FIX 2 & 3: Thread-local buffers to prevent OOM and internal Oodle mallocs
             thread_local std::vector<uint8_t> local_buf_vec;
             thread_local std::vector<uint8_t> scratch_mem;
-            const size_t SCRATCH_SIZE = 8 * 1024 * 1024; // 8MB scratch
+            const size_t SCRATCH_SIZE = 8 * 1024 * 1024; 
             if (scratch_mem.size() < SCRATCH_SIZE) scratch_mem.resize(SCRATCH_SIZE);
 
             size_t required_size = static_cast<size_t>(task->usize) * 2 + 65536;
@@ -191,7 +195,6 @@ Result<int> RunEncode(const std::string& input_path, const std::string& output_p
                 if (static_num_levels > 0) {
                     for (int i = 0; i < static_num_levels; ++i) {
                         int32_t test_level = static_levels[i];
-                        // Pass scratch memory to Oodle
                         int64_t res = OodleLZ_Compress(method, task->dec_data.data(), task->usize,
                                                        local_buf, test_level, &opts, nullptr, nullptr, scratch_mem.data(), scratch_mem.size());
                         if (res > 0 && res == static_cast<int64_t>(task->csize) &&
@@ -211,7 +214,6 @@ Result<int> RunEncode(const std::string& input_path, const std::string& output_p
                     std::vector<int32_t> levels_to_try = (cached != -1) ? std::vector<int32_t>{cached} : std::vector<int32_t>{4, 6, 7};
 
                     for (int32_t test_level : levels_to_try) {
-                        // Pass scratch memory to Oodle
                         int64_t res = OodleLZ_Compress(method, task->dec_data.data(), task->usize,
                                                        local_buf, test_level, &opts, nullptr, nullptr, scratch_mem.data(), scratch_mem.size());
                         if (res > 0 && res == static_cast<int64_t>(task->csize) && std::memcmp(task->raw_win_buf.data(), local_buf, task->csize) == 0) {

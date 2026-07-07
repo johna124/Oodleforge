@@ -91,7 +91,7 @@ typedef int64_t (OodleLZ_Compress_t)(
     void* scratchMem, int64_t scratchSize);
 
 extern OodleLZ_Decompress_t* OodleLZ_Decompress;
-extern OodleLZ_Compress_t*   OodleLZ_Compress;
+extern OodleLZ_Compress_t* OodleLZ_Compress;
 bool LoadOodle();
 
 namespace Logger {
@@ -107,7 +107,7 @@ namespace Logger {
     
     inline void Log(Level lvl, const std::string& msg) {
         if (lvl == Level::Debug && !is_debug_enabled) return;
-        std::lock_guard<std::mutex> lock(log_mutex); // FIXED ARTIFACT
+        std::lock_guard<std::mutex> lock(log_mutex);
         std::string prefix = (lvl == Level::Debug) ? "[DEBUG] " :
                              (lvl == Level::Warn)  ? "[WARN] " :
                              (lvl == Level::Error) ? "[ERROR] " : "[INFO] ";
@@ -204,19 +204,15 @@ struct DecTask {
     std::string error_msg;
 };
 
-// FIX: Lock-free stats tracking
+// [FIX] Pruned unused global maps and locks from ScanStats. 
+// scan.cpp now securely tracks detailed telemetry locally, making this struct 100% lock-free.
 struct ScanStats {
     std::atomic<uint32_t> blocks_found{0};
     std::atomic<uint32_t> matches_identified{0};
     std::atomic<uint32_t> fails_unidentified{0};
-    
-    std::map<int32_t, uint32_t> method_counts;
-    std::map<int32_t, uint32_t> level_counts;
-    std::mutex map_mutex; 
 
-    void add_match(int32_t m, int32_t l) { 
+    void add_match() { 
         matches_identified.fetch_add(1, std::memory_order_relaxed); 
-        // Map updates are handled via thread-local merging now
     }
 };
 
@@ -250,12 +246,12 @@ public:
         std::vector<T>& get() { return *ptr; }
     };
     Handle acquire() {
-        std::unique_lock<std::mutex> lock(mtx); // FIXED ARTIFACT
+        std::unique_lock<std::mutex> lock(mtx);
         if(available.empty()) available.push(std::make_shared<std::vector<T>>(item_size));
         auto p = available.front(); available.pop(); return Handle(p, this);
     }
     void release(std::shared_ptr<std::vector<T>> p) {
-        std::unique_lock<std::mutex> lock(mtx); available.push(p); // FIXED ARTIFACT
+        std::unique_lock<std::mutex> lock(mtx); available.push(p);
     }
 };
 
@@ -324,7 +320,7 @@ public:
 };
 
 class ThreadPool {
-    std::vector<std::thread> workers; // FIXED ARTIFACT
+    std::vector<std::thread> workers;
     std::queue<std::function<void()>> tasks;
     std::mutex queue_mutex;
     std::condition_variable condition;
@@ -339,7 +335,7 @@ public:
         auto task_ptr = std::make_shared<std::packaged_task<return_type()>>(std::forward<F>(f));
         std::future<return_type> res = task_ptr->get_future();
         {
-            std::unique_lock<std::mutex> lock(queue_mutex); // FIXED ARTIFACT
+            std::unique_lock<std::mutex> lock(queue_mutex);
             if(stop) throw std::runtime_error("enqueue on stopped ThreadPool");
             tasks.emplace([task_ptr]() { (*task_ptr)(); });
         }

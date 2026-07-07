@@ -28,7 +28,6 @@ Result<int> RunScan(const std::string& input_path, bool verbose, int num_threads
     opts.spaceSpeedTradeoffBytes = tradeoff_bytes;
     opts.sendQuantumCRCs = quantum_crc ? 1 : 0;
 
-    ThreadPool pool(num_threads);
     UI ui(scan_limit, 0, verbose);
     size_t actual_win = Config::WIN_SIZE_LARGE;
     BlockScanner scanner(reader, fSize, useAES, aesKey, actual_win);
@@ -36,6 +35,14 @@ Result<int> RunScan(const std::string& input_path, bool verbose, int num_threads
     std::set<std::pair<int32_t, int32_t>> identified_cache;
     std::shared_mutex scan_mutex;
     std::queue<std::future<std::shared_ptr<BlockTask>>> scan_queue;
+    
+    // [FIX: Safe Statistics Aggregation]
+    // Thread pool workers can persist thread_locals but we need explicit safe metrics gathering 
+    // to track exactly how many instances of each Oodle method and compression level are found.
+    std::map<int32_t, uint32_t> final_method_counts;
+    std::map<int32_t, uint32_t> final_level_counts;
+    std::mutex stats_mutex;
+
     uint64_t pos = 0;
     uint64_t last_block_end = 0;
     std::vector<std::pair<uint64_t, uint64_t>> gaps;
@@ -55,11 +62,15 @@ Result<int> RunScan(const std::string& input_path, bool verbose, int num_threads
         levels_vec = {4, 5, 6, 7};
     }
 
+    // [FIX: Destructor Order / Use-After-Free Prevention]
+    // Moved the ThreadPool below reference-captured local items (stats, scan_mutex, opts, etc.)
+    // to guarantee execution completes or cancels before referenced data variables go out of scope.
+    ThreadPool pool(num_threads);
+
     while (pos < scan_limit && pos < fSize) {
         auto task = scanner.extract_next_block(pos, scan_limit, usizes_vec);
         auto now = std::chrono::steady_clock::now();
         if (std::chrono::duration_cast<std::chrono::milliseconds>(now - last_ui_time).count() >= 1000) {
-            // FIX: Lock-free atomic reads for UI
             uint32_t m = stats.matches_identified.load(std::memory_order_relaxed);
             uint32_t f = stats.fails_unidentified.load(std::memory_order_relaxed);
             uint32_t bf = stats.blocks_found.load(std::memory_order_relaxed);
@@ -76,20 +87,21 @@ Result<int> RunScan(const std::string& input_path, bool verbose, int num_threads
         }
         last_block_end = task->pos + task->csize;
         
-        // FIX: Lock-free atomic increment
         stats.blocks_found.fetch_add(1, std::memory_order_relaxed);
 
-        scan_queue.push(pool.enqueue([task, methods_vec, levels_vec, &scan_mutex, &identified_cache, &stats, &opts]() {
+        scan_queue.push(pool.enqueue([task, methods_vec, levels_vec, &scan_mutex, &identified_cache, &stats, &opts, &final_method_counts, &final_level_counts, &stats_mutex]() {
             int32_t m = -1, l = -1;
             bool match = TryMatchBlock(task, methods_vec, levels_vec, identified_cache, scan_mutex, m, l, &opts);
             
-            // FIX: Thread-local maps to eliminate map contention
-            thread_local std::map<int32_t, uint32_t> local_methods;
-            thread_local std::map<int32_t, uint32_t> local_levels;
-
             if (match) {
-                local_methods[m]++;
-                local_levels[l]++;
+                // [FIX: Missing Counter Increment & Accurate UI Statistics Breakdown]
+                // 1. Increments `matches_identified` so the report logic doesn't permanently display "0 Matches".
+                // 2. Thread-safely updates the method and level mappings for the finalized summary window.
+                stats.matches_identified.fetch_add(1, std::memory_order_relaxed);
+                
+                std::lock_guard<std::mutex> lock(stats_mutex);
+                final_method_counts[m]++;
+                final_level_counts[l]++;
             } else {
                 stats.fails_unidentified.fetch_add(1, std::memory_order_relaxed);
             }
@@ -115,18 +127,6 @@ Result<int> RunScan(const std::string& input_path, bool verbose, int num_threads
         scan_queue.pop();
     }
 
-    // FIX: Merge thread-local maps exactly ONCE at the end
-    {
-        std::unique_lock<std::mutex> lock(stats.map_mutex);
-        // Note: In a real multi-threaded spawn, we'd need a thread-local registry. 
-        // Since ThreadPool reuses threads, the thread_locals persist. 
-        // For simplicity in this architecture, we rely on the cache_mutex inside TryMatchBlock 
-        // or just accept minor map contention if strictly necessary, but the atomics above 
-        // handle 99% of the load. To fully fix map contention, we'd pass a local map back in the future.
-        // *Self-correction: The lambda above uses thread_local, but we can't easily access them from main thread. 
-        // The atomic counters handle the heavy lifting. The map_mutex protects the rare map inserts if we used them here.*
-    }
-
     std::cout << std::endl << "--- Scan Report ---" << std::endl
               << "Blocks Found: " << stats.blocks_found.load()
               << " | Matches: " << stats.matches_identified.load()
@@ -137,8 +137,22 @@ Result<int> RunScan(const std::string& input_path, bool verbose, int num_threads
                   << (static_cast<double>(stats.matches_identified.load()) / stats.blocks_found.load() * 100.0) << "%" << std::endl;
     }
 
-    // Note: method_counts/level_counts population would require passing thread-local maps out. 
-    // For this version, we rely on the atomic counters for the primary report.
+    // [FIX: Accurate UI Statistics Output Breakdown]
+    // Safely outputs the explicit distribution of found Oodle methods and encoding levels.
+    if (!final_method_counts.empty()) {
+        std::cout << "Methods Identified: ";
+        for (auto const& [method_id, count] : final_method_counts) {
+            std::cout << "Mth:" << method_id << " (" << count << ") ";
+        }
+        std::cout << std::endl;
+    }
+    if (!final_level_counts.empty()) {
+        std::cout << "Levels Identified:  ";
+        for (auto const& [level_id, count] : final_level_counts) {
+            std::cout << "Lvl:" << level_id << " (" << count << ") ";
+        }
+        std::cout << std::endl;
+    }
     
     std::cout << "Time: " << ui.format_time(ui.get_elapsed()) << std::endl;
     {
