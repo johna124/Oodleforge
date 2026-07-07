@@ -81,6 +81,17 @@ Files: common.h
 The transition to std::atomic<uint64_t> for byte counting is now fully robust; all seek operations are now captured in the atomic state, eliminating potential UI/stats stalls during archive header reconstruction.
 
 
+• Scan Performance:
+  - Refactored `ScanStats` in `scan.cpp`: Replaced `std::map` and `std::mutex` with `std::array<std::atomic<uint32_t>, 16>`.
+  - Completely removed lock contention on the hot path for statistical aggregation, ensuring zero-latency progress tracking regardless of block throughput.
+• Pipeline Stability:
+  - Refactored `ThreadPool` lifecycle management to ensure worker threads are joined strictly *before* referencing structures (like `opts` or `gap_pool`) are destroyed, eliminating potential use-after-free bugs during teardown.
+  - Optimized memory usage by leveraging `thread_local` scratch buffers in `encode.cpp`, preventing heap fragmentation and reducing allocation overhead on large-scale operations.
+• Reconstruction Correctness:
+  - Hardened `reconstruct.cpp` with strict CRC32-first validation; processing now aborts immediately on checksum mismatches to prevent corruption propagation.
+  - Added robust block metadata offset verification, preventing out-of-bounds reads and segmentation faults when handling malformed or truncated archive files.
+
+
 ## 🍷 New Feature: Wine Hybrid Mode & AVX2 Optimization
 • Wine Detection
   - Automatically detects Wine environment via Windows Registry (HKEY_CURRENT_USER\Software\Wine), 

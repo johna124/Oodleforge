@@ -36,12 +36,11 @@ Result<int> RunScan(const std::string& input_path, bool verbose, int num_threads
     std::shared_mutex scan_mutex;
     std::queue<std::future<std::shared_ptr<BlockTask>>> scan_queue;
     
-    // [FIX: Safe Statistics Aggregation]
-    // Thread pool workers can persist thread_locals but we need explicit safe metrics gathering 
-    // to track exactly how many instances of each Oodle method and compression level are found.
-    std::map<int32_t, uint32_t> final_method_counts;
-    std::map<int32_t, uint32_t> final_level_counts;
-    std::mutex stats_mutex;
+    // [OPTIMIZATION: Lock-Free Statistics]
+    // Replaced map/mutex with atomic arrays to eliminate hot-path lock contention.
+    // 16 is sufficient to cover standard Oodle methods (up to 13) and levels (1-9).
+    std::array<std::atomic<uint32_t>, 16> method_counts_atomic{};
+    std::array<std::atomic<uint32_t>, 16> level_counts_atomic{};
 
     uint64_t pos = 0;
     uint64_t last_block_end = 0;
@@ -62,9 +61,6 @@ Result<int> RunScan(const std::string& input_path, bool verbose, int num_threads
         levels_vec = {4, 5, 6, 7};
     }
 
-    // [FIX: Destructor Order / Use-After-Free Prevention]
-    // Moved the ThreadPool below reference-captured local items (stats, scan_mutex, opts, etc.)
-    // to guarantee execution completes or cancels before referenced data variables go out of scope.
     ThreadPool pool(num_threads);
 
     while (pos < scan_limit && pos < fSize) {
@@ -89,19 +85,16 @@ Result<int> RunScan(const std::string& input_path, bool verbose, int num_threads
         
         stats.blocks_found.fetch_add(1, std::memory_order_relaxed);
 
-        scan_queue.push(pool.enqueue([task, methods_vec, levels_vec, &scan_mutex, &identified_cache, &stats, &opts, &final_method_counts, &final_level_counts, &stats_mutex]() {
+        scan_queue.push(pool.enqueue([task, methods_vec, levels_vec, &scan_mutex, &identified_cache, &stats, &opts, &method_counts_atomic, &level_counts_atomic]() {
             int32_t m = -1, l = -1;
             bool match = TryMatchBlock(task, methods_vec, levels_vec, identified_cache, scan_mutex, m, l, &opts);
             
             if (match) {
-                // [FIX: Missing Counter Increment & Accurate UI Statistics Breakdown]
-                // 1. Increments `matches_identified` so the report logic doesn't permanently display "0 Matches".
-                // 2. Thread-safely updates the method and level mappings for the finalized summary window.
                 stats.matches_identified.fetch_add(1, std::memory_order_relaxed);
                 
-                std::lock_guard<std::mutex> lock(stats_mutex);
-                final_method_counts[m]++;
-                final_level_counts[l]++;
+                // Atomic increments (no locks)
+                if (m >= 0 && m < 16) method_counts_atomic[m].fetch_add(1, std::memory_order_relaxed);
+                if (l >= 0 && l < 16) level_counts_atomic[l].fetch_add(1, std::memory_order_relaxed);
             } else {
                 stats.fails_unidentified.fetch_add(1, std::memory_order_relaxed);
             }
@@ -127,6 +120,16 @@ Result<int> RunScan(const std::string& input_path, bool verbose, int num_threads
         scan_queue.pop();
     }
 
+    // [Reconstruct Statistics for Display]
+    std::map<int32_t, uint32_t> final_method_counts;
+    std::map<int32_t, uint32_t> final_level_counts;
+    for (int i = 0; i < 16; ++i) {
+        uint32_t m = method_counts_atomic[i].load(std::memory_order_relaxed);
+        uint32_t l = level_counts_atomic[i].load(std::memory_order_relaxed);
+        if (m > 0) final_method_counts[i] = m;
+        if (l > 0) final_level_counts[l] = l;
+    }
+
     std::cout << std::endl << "--- Scan Report ---" << std::endl
               << "Blocks Found: " << stats.blocks_found.load()
               << " | Matches: " << stats.matches_identified.load()
@@ -137,8 +140,6 @@ Result<int> RunScan(const std::string& input_path, bool verbose, int num_threads
                   << (static_cast<double>(stats.matches_identified.load()) / stats.blocks_found.load() * 100.0) << "%" << std::endl;
     }
 
-    // [FIX: Accurate UI Statistics Output Breakdown]
-    // Safely outputs the explicit distribution of found Oodle methods and encoding levels.
     if (!final_method_counts.empty()) {
         std::cout << "Methods Identified: ";
         for (auto const& [method_id, count] : final_method_counts) {

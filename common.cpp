@@ -61,7 +61,21 @@ bool LoadOodle() {
     OodleLZ_Decompress = reinterpret_cast<OodleLZ_Decompress_t*>(dlsym(hModule, "OodleLZ_Decompress"));
     OodleLZ_Compress   = reinterpret_cast<OodleLZ_Compress_t*>(dlsym(hModule, "OodleLZ_Compress"));
 #endif
-    return (OodleLZ_Decompress != nullptr && OodleLZ_Compress != nullptr);
+
+    bool success = (OodleLZ_Decompress != nullptr && OodleLZ_Compress != nullptr);
+
+    // [FIX] Resource Leak Check: Release handle if partial symbol resolution fails
+    if (!success && hModule) {
+#ifdef _WIN32
+        FreeLibrary(hModule);
+#else
+        dlclose(hModule);
+#endif
+        OodleLZ_Decompress = nullptr;
+        OodleLZ_Compress = nullptr;
+    }
+
+    return success;
 }
 
 int64_t CompressAndVerify(int32_t method, int32_t level, const uint8_t* src, uint32_t usize,
@@ -234,9 +248,11 @@ struct FastStreamWriter::Impl {
     std::vector<char> disk_buf;
     size_t buffer_size;
     std::mutex mtx;
+    std::mutex io_mtx;               // [FIX] Dedicated mutex for un-thread-safe std::ofstream object
     std::condition_variable cv;
     std::thread flush_thread;
     bool flush_ready;
+    bool disk_busy;                  // [FIX] Tracks if the background thread is actively executing a disk write
     bool done;
     std::atomic<bool> io_error;
     std::string last_error;
@@ -244,7 +260,7 @@ struct FastStreamWriter::Impl {
     std::atomic<uint64_t> total_bytes_written{0};
 
     Impl(size_t buf_sz = 32 * 1024 * 1024)
-        : buffer_size(buf_sz), flush_ready(false), done(false), io_error(false) {
+        : buffer_size(buf_sz), flush_ready(false), disk_busy(false), done(false), io_error(false) {
         active_buf.reserve(buffer_size);
         flush_buf.reserve(buffer_size);
         disk_buf.reserve(buffer_size);
@@ -327,25 +343,37 @@ struct FastStreamWriter::Impl {
         while (true) {
             std::unique_lock<std::mutex> lock(mtx);
             cv.wait(lock, [this]() { return flush_ready || done; });
+            
+            // Terminate worker only if active buffer is completely exhausted
+            if (!flush_ready && done) {
+                break;
+            }
+            
             if (flush_ready) {
                 std::swap(disk_buf, flush_buf);
                 flush_ready = false;
+                disk_busy = true; // [FIX] Blocks concurrent file modifications via seekp/tellp
                 lock.unlock();
                 cv.notify_all();
+                
                 if (!disk_buf.empty()) {
+                    std::lock_guard<std::mutex> io_lock(io_mtx); // [FIX] Synchronize physical disk writes
                     file.write(disk_buf.data(), disk_buf.size());
                     if (file.bad()) {
                         std::lock_guard<std::mutex> err_lock(mtx);
                         last_error = "Disk write failed. Disk full or hardware fault detected.";
                         io_error.store(true, std::memory_order_release);
                         done = true;
+                        disk_busy = false;
                         cv.notify_all();
                         return;
                     }
                     disk_buf.clear();
                 }
-            } else if (done) {
-                break;
+
+                lock.lock();
+                disk_busy = false; // [FIX] Release the busy flag to allow UI metrics and file pointer manipulation
+                cv.notify_all();
             }
         }
     }
@@ -371,32 +399,57 @@ void FastStreamWriter::clear_error() {
 }
 
 uint64_t FastStreamWriter::tellp() const {
-    return pImpl_->total_bytes_written.load(std::memory_order_relaxed);
+    std::unique_lock<std::mutex> lock(pImpl_->mtx);
+    
+    // [FIX] Ensure accurate pointer reading by waiting for disk idle state
+    pImpl_->cv.wait(lock, [this]() {
+        return !pImpl_->flush_ready && !pImpl_->disk_busy;
+    });
+
+    std::lock_guard<std::mutex> io_lock(pImpl_->io_mtx);
+    std::streampos current_pos = pImpl_->file.tellp();
+    return static_cast<uint64_t>(current_pos);
 }
 
 void FastStreamWriter::seekp(uint64_t pos) {
     if (pImpl_->io_error.load(std::memory_order_acquire)) return;
     pImpl_->check_io();
+    
     std::unique_lock<std::mutex> lock(pImpl_->mtx);
-    pImpl_->cv.wait(lock, [this]() {
-        return !pImpl_->flush_ready || pImpl_->done || pImpl_->io_error.load(std::memory_order_acquire);
-    });
-    if (pImpl_->io_error.load(std::memory_order_acquire)) return;
+    
+    // Wait for the active buffer to empty
     if (!pImpl_->active_buf.empty()) {
+        pImpl_->cv.wait(lock, [this]() {
+            return !pImpl_->flush_ready || pImpl_->done || pImpl_->io_error.load(std::memory_order_acquire);
+        });
+        if (pImpl_->io_error.load(std::memory_order_acquire)) return;
         std::swap(pImpl_->flush_buf, pImpl_->active_buf);
         pImpl_->flush_ready = true;
         pImpl_->cv.notify_all();
     }
+
+    // [FIX] Block execution until the background thread completely finishes writing data
     pImpl_->cv.wait(lock, [this]() {
-        return !pImpl_->flush_ready || pImpl_->done || pImpl_->io_error.load(std::memory_order_acquire);
+        return (!pImpl_->flush_ready && !pImpl_->disk_busy) || pImpl_->done || pImpl_->io_error.load(std::memory_order_acquire);
     });
+    
     if (pImpl_->io_error.load(std::memory_order_acquire)) return;
     pImpl_->check_io();
+
+    // [FIX] Enforce 64-bit integer sizing at compile-time to prevent signed overflow wrap-arounds
+    static_assert(sizeof(std::streamoff) >= 8, 
+        "CRITICAL ERROR: Compilation target requires 64-bit std::streamoff structures to safely manage archives larger than 2GB.");
+
+    // [FIX] Runtime fallback verification check to trap unsigned-to-signed conversion overflows
+    if (static_cast<std::streamoff>(pos) < 0) {
+        throw std::runtime_error("FastStreamWriter::seekp - Target file seek offset causes a negative 32-bit signed overflow.");
+    }
     
+    // [FIX] Isolate stream manipulation behind the synchronized boundary
+    std::lock_guard<std::mutex> io_lock(pImpl_->io_mtx);
     pImpl_->file.clear();
     pImpl_->file.seekp(static_cast<std::streamoff>(pos));
     
-    // [FIX] Update atomic counter on seek to ensure lock-free tellp() stays perfectly accurate.
     if (pImpl_->file.good()) {
         pImpl_->total_bytes_written.store(pos, std::memory_order_relaxed);
     } else {

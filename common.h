@@ -143,7 +143,7 @@ class Result {
     bool is_error;
 public:
     Result(T val) : value(val), code(ErrorCode::SUCCESS), is_error(false) {}
-    Result(ErrorCode c, const std::string& msg) : code(c), error_msg(msg), is_error(true) {}
+    Result(ErrorCode c, const std::string& msg) : value(), error_msg(msg), code(c), is_error(true) {}
     bool is_err() const { return is_error; }
     std::string get_error() const { return error_msg; }
     T get_value() const { return value; }
