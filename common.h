@@ -25,6 +25,7 @@
 #include <condition_variable>
 #include <deque>
 #include <array>
+#include <type_traits>
 
 #ifdef _WIN32
 #ifndef NOMINMAX
@@ -38,7 +39,6 @@
 #include <dlfcn.h>
 #endif
 
-// Oodle standard compression options structure
 struct OodleLZ_CompressOptions {
     uint32_t version;
     uint32_t verbosity;
@@ -99,36 +99,38 @@ namespace Logger {
     extern bool is_debug_enabled;
     extern std::ofstream debug_log;
     extern std::mutex log_mutex;
-    
+
     inline void Init(bool debug) {
-        is_debug_enabled = debug;
-        if (is_debug_enabled) debug_log.open("oodleforge_debug.log", std::ios::app);
-    }
-    
+         is_debug_enabled = debug;
+         if (is_debug_enabled) debug_log.open("oodleforge_debug.log", std::ios::app);
+     }
+
     inline void Log(Level lvl, const std::string& msg) {
-        if (lvl == Level::Debug && !is_debug_enabled) return;
-        std::lock_guard<std::mutex> lock(log_mutex);
-        std::string prefix = (lvl == Level::Debug) ? "[DEBUG] " :
-                             (lvl == Level::Warn)  ? "[WARN] " :
-                             (lvl == Level::Error) ? "[ERROR] " : "[INFO] ";
-        if (is_debug_enabled && debug_log.is_open()) {
-            debug_log << prefix << msg << "\n";
-            debug_log.flush();
-        } else if (lvl != Level::Debug) {
-            std::cerr << prefix << msg << "\n";
-        }
-    }
+         if (lvl == Level::Debug && !is_debug_enabled) return;
+         std::lock_guard<std::mutex> lock(log_mutex);
+         std::string prefix = (lvl == Level::Debug) ? "[DEBUG] " :
+                              (lvl == Level::Warn)  ? "[WARN] " :
+                              (lvl == Level::Error) ? "[ERROR] " : "[INFO] ";
+         if (is_debug_enabled && debug_log.is_open()) {
+             debug_log << prefix << msg << "\n";
+             debug_log.flush();
+         } else if (lvl != Level::Debug) {
+             std::cerr << prefix << msg << "\n";
+         }
+     }
 }
 
-void* AES_Context_Create(const uint8_t* key);
-void  AES_Context_Destroy(void* ctx);
-void  AES_Context_Decrypt(void* ctx, uint8_t* buf, uint32_t len);
-void  AES_Context_Encrypt(void* ctx, uint8_t* buf, uint32_t len);
+struct AES_ctx; 
 
 struct AESContextDeleter {
-    void operator()(void* ctx) const { if (ctx) AES_Context_Destroy(ctx); }
+    void operator()(AES_ctx* ctx) const;
 };
-using AESContextPtr = std::unique_ptr<void, AESContextDeleter>;
+using AESContextPtr = std::unique_ptr<AES_ctx, AESContextDeleter>;
+
+AES_ctx* AES_Context_Create(const uint8_t* key);
+void     AES_Context_Destroy(AES_ctx* ctx);
+void     AES_Context_Decrypt(AES_ctx* ctx, uint8_t* buf, uint32_t len);
+void     AES_Context_Encrypt(AES_ctx* ctx, uint8_t* buf, uint32_t len);
 
 enum class ErrorCode {
     SUCCESS = 0, ERR_FILE_NOT_FOUND = 1, ERR_INVALID_MAGIC = 2, ERR_CRC_MISMATCH = 3,
@@ -142,11 +144,17 @@ class Result {
     ErrorCode code;
     bool is_error;
 public:
-    Result(T val) : value(val), code(ErrorCode::SUCCESS), is_error(false) {}
-    Result(ErrorCode c, const std::string& msg) : value(), error_msg(msg), code(c), is_error(true) {}
+    Result(T val) : value(std::move(val)), code(ErrorCode::SUCCESS), is_error(false) {}
+    Result(ErrorCode c, std::string msg) : value(), error_msg(std::move(msg)), code(c), is_error(true) {}
+    
     bool is_err() const { return is_error; }
-    std::string get_error() const { return error_msg; }
-    T get_value() const { return value; }
+    const std::string& get_error() const { return error_msg; }
+    
+    // [FIX] Ref-qualified overloads to resolve GCC ambiguity and enable safe moves
+    T& get_value() & { return value; }
+    const T& get_value() const & { return value; }
+    T get_value() && { return std::move(value); }
+    
     ErrorCode get_code() const { return code; }
 };
 
@@ -204,13 +212,10 @@ struct DecTask {
     std::string error_msg;
 };
 
-// [FIX] Pruned unused global maps and locks from ScanStats. 
-// scan.cpp now securely tracks detailed telemetry locally, making this struct 100% lock-free.
 struct ScanStats {
     std::atomic<uint32_t> blocks_found{0};
     std::atomic<uint32_t> matches_identified{0};
     std::atomic<uint32_t> fails_unidentified{0};
-
     void add_match() { 
         matches_identified.fetch_add(1, std::memory_order_relaxed); 
     }
@@ -225,6 +230,7 @@ public:
     ObjectPool(size_t count, size_t sz) : item_size(sz) {
         for(size_t i = 0; i < count; ++i) available.push(std::make_shared<std::vector<T>>(sz));
     }
+
     struct Handle {
         std::shared_ptr<std::vector<T>> ptr;
         ObjectPool* pool;
@@ -245,14 +251,67 @@ public:
         Handle& operator=(const Handle&) = delete;
         std::vector<T>& get() { return *ptr; }
     };
+
     Handle acquire() {
         std::unique_lock<std::mutex> lock(mtx);
         if(available.empty()) available.push(std::make_shared<std::vector<T>>(item_size));
         auto p = available.front(); available.pop(); return Handle(p, this);
     }
+
     void release(std::shared_ptr<std::vector<T>> p) {
         std::unique_lock<std::mutex> lock(mtx); available.push(p);
     }
+};
+
+template <typename T>
+class ReusableBufferPool {
+    std::mutex mtx;
+    std::vector<std::vector<T>> pool;
+public:
+    std::vector<T> acquire(size_t min_size) {
+        std::lock_guard<std::mutex> lock(mtx);
+        if (pool.empty()) {
+            std::vector<T> buf;
+            if (min_size > 0) buf.resize(min_size);
+            return buf;
+        }
+        auto buf = std::move(pool.back());
+        pool.pop_back();
+        if (buf.size() < min_size) buf.resize(min_size);
+        return buf;
+    }
+    void release(std::vector<T> buf) {
+        std::lock_guard<std::mutex> lock(mtx);
+        pool.push_back(std::move(buf));
+    }
+};
+
+template <typename T>
+class PooledBuffer {
+    ReusableBufferPool<T>* pool;
+    std::vector<T> buf;
+public:
+    PooledBuffer(ReusableBufferPool<T>& p, size_t min_size) : pool(&p), buf(p.acquire(min_size)) {}
+    ~PooledBuffer() { if (pool) pool->release(std::move(buf)); }
+    
+    PooledBuffer(const PooledBuffer&) = delete;
+    PooledBuffer& operator=(const PooledBuffer&) = delete;
+    
+    PooledBuffer(PooledBuffer&& other) noexcept : pool(other.pool), buf(std::move(other.buf)) { other.pool = nullptr; }
+    PooledBuffer& operator=(PooledBuffer&& other) noexcept {
+        if (this != &other) {
+            if (pool) pool->release(std::move(buf));
+            pool = other.pool;
+            buf = std::move(other.buf);
+            other.pool = nullptr;
+        }
+        return *this;
+    }
+
+    T* data() { return buf.data(); }
+    const T* data() const { return buf.data(); }
+    size_t size() const { return buf.size(); }
+    std::vector<T>& vec() { return buf; }
 };
 
 class ThreadSafeReader {
@@ -301,8 +360,13 @@ class BlockScanner {
 public:
     BlockScanner(ThreadSafeReader& reader, uint64_t file_size, bool use_aes, const std::vector<uint8_t>& aes_key, size_t win_size);
     ~BlockScanner();
-    std::shared_ptr<BlockTask> extract_next_block(uint64_t& pos, uint64_t limit, const std::vector<uint32_t>& test_sizes);
+    BlockScanner(const BlockScanner&) = delete;
+    BlockScanner& operator=(const BlockScanner&) = delete;
+    BlockScanner(BlockScanner&&) = delete;
+    BlockScanner& operator=(BlockScanner&&) = delete;
     
+    std::shared_ptr<BlockTask> extract_next_block(uint64_t& pos, uint64_t limit, const std::vector<uint32_t>& test_sizes);
+
     struct ScanDiagnostics {
         uint64_t magic_candidates_found = 0;
         uint64_t passed_fast_rejection = 0;
@@ -329,9 +393,10 @@ class ThreadPool {
 public:
     ThreadPool(size_t threads);
     ~ThreadPool();
-    template <class F>
-    std::future<typename std::invoke_result<F>::type> enqueue(F&& f) {
-        using return_type = typename std::invoke_result<F>::type;
+
+    template <typename F>
+    std::future<std::invoke_result_t<F>> enqueue(F&& f) {
+        using return_type = std::invoke_result_t<F>;
         auto task_ptr = std::make_shared<std::packaged_task<return_type()>>(std::forward<F>(f));
         std::future<return_type> res = task_ptr->get_future();
         {
@@ -368,26 +433,28 @@ std::vector<int32_t> ParseLevels(const std::string& input);
 std::vector<uint8_t> ParseKey(const std::string& hex);
 void ResolveAESKey(std::vector<uint8_t>& aesKey, bool& useAES, const PreHeader& hdr);
 uint32_t GetOodleBlockSize(const uint8_t* hdr, size_t available_len, uint8_t& codec_out);
+
 int64_t CompressAndVerify(int32_t method, int32_t level, const uint8_t* src, uint32_t usize,
-    const uint8_t* expected, uint32_t expected_size, std::vector<uint8_t>& temp_buf,
-    const OodleLZ_CompressOptions* opts, void* scratchMem, int64_t scratchSize);
+                          const uint8_t* expected, uint32_t expected_size, std::vector<uint8_t>& temp_buf,
+                          const OodleLZ_CompressOptions* opts, void* scratchMem, int64_t scratchSize);
+
 bool TryMatchBlock(const std::shared_ptr<BlockTask>& task,
-    const std::vector<int32_t>& all_methods,
-    const std::vector<int32_t>& all_levels,
-    std::set<std::pair<int32_t, int32_t>>& cache,
-    std::shared_mutex& cache_mutex,
-    int32_t& out_method, int32_t& out_level,
-    const OodleLZ_CompressOptions* opts);
+                   const std::vector<int32_t>& all_methods,
+                   const std::vector<int32_t>& all_levels,
+                   std::set<std::pair<int32_t, int32_t>>& cache,
+                   std::shared_mutex& cache_mutex,
+                   int32_t& out_method, int32_t& out_level,
+                   const OodleLZ_CompressOptions* opts);
 
 Result<int> RunScan(const std::string& input_path, bool verbose, int num_threads,
-    const std::vector<int32_t>& m_ids, const std::vector<int32_t>& opt_levels,
-    bool opt_auto, bool opt_force, const std::vector<uint8_t>& aesKey,
-    bool useAES, double scan_percent, bool debug_mode,
-    uint32_t tradeoff_bytes, bool quantum_crc);
+                    const std::vector<int32_t>& m_ids, const std::vector<int32_t>& opt_levels,
+                    bool opt_auto, bool opt_force, const std::vector<uint8_t>& aesKey,
+                    bool useAES, double scan_percent, bool debug_mode,
+                    uint32_t tradeoff_bytes, bool quantum_crc);
 
 Result<int> RunEncode(const std::string& input_path, const std::string& output_path, bool verbose, int num_threads,
-    const std::vector<int32_t>& m_ids, const std::vector<int32_t>& opt_levels, bool opt_auto, bool opt_force,
-    const std::vector<uint8_t>& aesKey, bool useAES, uint32_t tradeoff_bytes, bool quantum_crc);
+                      const std::vector<int32_t>& m_ids, const std::vector<int32_t>& opt_levels, bool opt_auto, bool opt_force,
+                      const std::vector<uint8_t>& aesKey, bool useAES, uint32_t tradeoff_bytes, bool quantum_crc);
 
 Result<int> RunReconstruct(const std::string& input_path, const std::string& output_path, bool verbose, int num_threads,
-    std::vector<uint8_t>& aesKey, bool& useAES, uint32_t tradeoff_bytes, bool quantum_crc);
+                           std::vector<uint8_t>& aesKey, bool& useAES, uint32_t tradeoff_bytes, bool quantum_crc);

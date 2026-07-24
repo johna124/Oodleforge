@@ -1,11 +1,11 @@
 <div align="center">
 
-# 🦑 OodleForge v34
+# 🦑 OodleForge v34.1
 
 ### *Exact byte-for-byte reconstruction. 11x faster than Wine.*
 ### *"The .so is dead. The .dlls are immortal."*
 
-**Advanced Multi-Method OodleLZ Archive Engine | v33.4 Scanner Robustness • Memory Discipline • I/O Reliability**
+**Advanced Multi-Method OodleLZ Archive Engine | v34.1**
 
 [![Build Status](https://img.shields.io/badge/build-passing-brightgreen)]()
 [![C++](https://img.shields.io/badge/C%2B%2B-17%2F20-blue)]()
@@ -21,19 +21,19 @@
 <img src="https://raw.githubusercontent.com/johna124/Oodleforge/main/banner2.jpg" width="600" alt="Oodleforge banner">
 ---
 
-**45 Days on Potato Hardware • 14 Days of Upgrade Madness • 4 AI Warriors • The Kraken is Slain**
+**45 Days on Potato Hardware**
 
-[The original diary](https://github.com/johna124/Oodleforge/blob/main/history.txt) started on a 2007 Q6600 + HD 6450 with four LLMs (Qwen, Claude, Grok, Gemini) fighting for dominance.  
+[The original diary](https://github.com/johna124/Oodleforge/blob/main/assets/history.txt) started on a 2007 Q6600 + HD 6450 with four LLMs (Qwen, Claude, Grok, Gemini) fighting for dominance.  
 The 11-day upgrade turned it into a production monster:  
 - Memory Beast ring buffer + pipeline queue reduced to 2x  
-- Full WalkOodleChain + 32 MB probe buffer for 99.98% block detection  
+- Full WalkOodleChain + 32 MB probe buffer  
 - Tuned windows (64 MB / 32 MB), safer AES padding, thread-safe FastStreamWriter  
 - Native Linux dlopen + exact byte-perfect recon  
 
 **Team OodleForge** (the five heroes stand eternal):
 
 <div align="center">
-  <img src="https://github.com/johna124/Oodleforge/blob/main/assets/CHARACTER-DOSSIERS/team_oodfleforge.png" width="600" alt="Team OodleForge — Qwen, Claude, Grok, Gemini">
+  <img src="https://github.com/johna124/Oodleforge/blob/main/assets/CHARACTER-DOSSIERS/team_oodfleforge.jpg" width="600" alt="Team OodleForge — Qwen, Claude, Grok, Gemini">
 </div>
 
 ---
@@ -60,7 +60,7 @@ Born from 45 days of intense development on legacy hardware (Core 2 Quad Q6600, 
 | **Version** | 34 (PREF! enabled) |
 
 ---
-<img src="https://raw.githubusercontent.com/johna124/Oodleforge/refs/heads/main/v34.png"/>
+<img src="https://raw.githubusercontent.com/johna124/Oodleforge/refs/heads/main/v34_1.jpg"/>
 
 
 ## 🎲 The 45-Day Campaign
@@ -201,6 +201,8 @@ oodleforge.exe r archive.oodle restored.bin
 ---
 
 ## 📜 Version History
+
+- **v34.1** (July 2026) Extreme Memory Discipline, SIMD Hot-Path Optimization, Cryptographic Type Safety, and Bulletproof Malicious File Resistance.
 - **v34** (July 2026) Memory Discipline, I/O Tracking Accuracy, Core Compilation Stability, Lock-Free Performance, Hardware-Accelerated Scanning, Wine Compatibility fixed for AVX2, and Bulletproof Correctness.
 - **v33.4** (June 2026) Scanner Robustness, Advanced Block Detection, and Critical Buffer Fixes
 - **v33.3** (June 2026) — Engine-Specific Compatibility, Expanded Method Support & Scanner Robustness

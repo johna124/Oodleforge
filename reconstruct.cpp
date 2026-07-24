@@ -17,7 +17,7 @@ Result<int> RunReconstruct(const std::string& input_path, const std::string& out
     PreHeader hdr;
     reader.pread(reinterpret_cast<char*>(&hdr), sizeof(hdr), 0);
 
-    if (hdr.magic != 0x50524546 || hdr.version != 34) { // UPDATED TO V34
+    if (hdr.magic != 0x50524546 || hdr.version != 34) { 
         return Result<int>(ErrorCode::ERR_INVALID_MAGIC, "Invalid archive magic or version mismatch.");
     }
 
@@ -27,15 +27,15 @@ Result<int> RunReconstruct(const std::string& input_path, const std::string& out
 
     if (hdr.block_count > Config::MAX_BLOCKS) {
         return Result<int>(ErrorCode::ERR_INVALID_MAGIC,
-            "Archive claims too many blocks (" + std::to_string(hdr.block_count) + " > " + std::to_string(Config::MAX_BLOCKS) + ")");
+                           "Archive claims too many blocks (" + std::to_string(hdr.block_count) + " > " + std::to_string(Config::MAX_BLOCKS) + ")");
     }
 
     std::vector<PreBlock> blocks(hdr.block_count);
     uint64_t blocks_meta_size = hdr.block_count * sizeof(PreBlock);
+
     if (fsz < sizeof(PreHeader) + blocks_meta_size) {
         return Result<int>(ErrorCode::ERR_INVALID_MAGIC, "Archive metadata exceeds file size.");
     }
-
     reader.pread(reinterpret_cast<char*>(blocks.data()), blocks_meta_size, fsz - blocks_meta_size);
 
     std::cout << "[REC] Reconstructing " << hdr.original_size / 1024 / 1024 << " MB (" << hdr.block_count << " blocks) using " << num_threads << " threads." << std::endl;
@@ -59,13 +59,13 @@ Result<int> RunReconstruct(const std::string& input_path, const std::string& out
     ThreadPool pool(num_threads);
     ObjectPool<char> gap_pool(num_threads * 2, Config::GAP_POOL_CHUNK);
     UI ui(hdr.original_size, hdr.block_count, verbose);
-
     std::atomic<uint32_t> dec_matches{0}, dec_fails{0};
     std::queue<std::future<std::shared_ptr<DecTask>>> dec_queue;
 
     uint64_t archive_offset = sizeof(PreHeader);
     uint64_t original_offset = 0;
     std::atomic<bool> fatal_abort{false};
+
     auto last_ui_time = std::chrono::steady_clock::now();
     uint32_t processed_blocks = 0;
 
@@ -119,19 +119,16 @@ Result<int> RunReconstruct(const std::string& input_path, const std::string& out
 
     for (uint32_t i = 0; i < hdr.block_count; ++i) {
         if (fatal_abort) break;
+
         const auto& b = blocks[i];
 
-        // [FIX 2]: Potential uint64_t Underflow via Malicious Archive Metadata
-        // Guards against corrupted or manipulated archives where offsets move backward, 
-        // preventing massive uint64_t underflows that cause out-of-bounds reads/OOMs.
         if (b.original_offset < original_offset) {
             std::cerr << "\n[FATAL] Malformed archive: block offsets overlap or are out of order." << std::endl;
             fatal_abort = true;
             break;
         }
-        
-        uint64_t gap = b.original_offset - original_offset;
 
+        uint64_t gap = b.original_offset - original_offset;
         auto task = std::make_shared<DecTask>();
         task->b = b;
         task->gap_len = gap;
@@ -171,9 +168,6 @@ Result<int> RunReconstruct(const std::string& input_path, const std::string& out
                     return task;
                 }
 
-                // [FIX 1]: Missing CRC Integrity Verification for Exact-Match Blocks
-                // Ensures the uncompressed exact-match data wasn't corrupted on disk 
-                // before we feed it into OodleLZ_Compress, preventing silent output corruption.
                 uint32_t crc_stored = CalculateCRC32(task->block_data_in.data(), task->b.stored_size);
                 if (crc_stored != task->b.crc32) {
                     task->fatal_error = true;
@@ -181,19 +175,16 @@ Result<int> RunReconstruct(const std::string& input_path, const std::string& out
                     return task;
                 }
 
-                // Thread-local buffers to prevent OOM and internal Oodle mallocs
-                thread_local std::vector<uint8_t> safe_temp;
-                thread_local std::vector<uint8_t> scratch_mem;
-                const size_t SCRATCH_SIZE = 8 * 1024 * 1024;
-                if (scratch_mem.size() < SCRATCH_SIZE) scratch_mem.resize(SCRATCH_SIZE);
+                static ReusableBufferPool<uint8_t> g_rec_scratch_pool;
+                static ReusableBufferPool<uint8_t> g_rec_temp_pool;
 
+                PooledBuffer<uint8_t> scratch_mem(g_rec_scratch_pool, 8 * 1024 * 1024);
                 size_t safe_bound = SafeCompressBound(task->b.decompressed_size);
-                if (safe_temp.size() < safe_bound) safe_temp.resize(safe_bound);
+                PooledBuffer<uint8_t> safe_temp(g_rec_temp_pool, safe_bound);
 
                 int32_t rec_method = task->b.compressor & 0xFF;
                 int32_t rec_level = task->b.compressor >> 8;
 
-                // Pass scratch memory to Oodle
                 int64_t comp_res = OodleLZ_Compress(
                     rec_method, task->block_data_in.data() + sizeof(BlockHeader),
                     task->b.decompressed_size, safe_temp.data(), rec_level,
@@ -206,15 +197,13 @@ Result<int> RunReconstruct(const std::string& input_path, const std::string& out
                     return task;
                 }
 
-                // [FIX 3]: Deterministic Size Enforcement on Re-Compression
-                // Explicitly validates that the resulting compression perfectly matches the originally recorded layout.
                 if (comp_res != static_cast<int64_t>(task->b.original_compressed_size)) {
                     task->fatal_error = true;
                     task->error_msg = "Oodle Re-compression size mismatch. Stream is non-deterministic or corrupted.";
                     return task;
                 }
 
-                task->compressed_out.assign(safe_temp.begin(), safe_temp.begin() + comp_res);
+                task->compressed_out.assign(safe_temp.data(), safe_temp.data() + comp_res);
                 dec_matches++;
                 return task;
             }));
@@ -234,22 +223,27 @@ Result<int> RunReconstruct(const std::string& input_path, const std::string& out
         archive_offset += b.stored_size;
         original_offset = b.original_offset + b.original_compressed_size;
 
+        // [ARCHITECTURAL GUARANTEE: Strict FIFO Sequencer]
+        // We MUST call .get() on dec_queue.front(). This acts as a synchronization barrier.
+        // Even if block N+1 finishes decompression before block N, the main thread will block 
+        // here until block N is ready. This guarantees that process_and_write() is called 
+        // in strict sequential order (0, 1, 2, ...), preventing any out-of-order disk writes.
         while (dec_queue.size() >= static_cast<size_t>(num_threads * 2)) {
             std::shared_ptr<DecTask> completed;
             try {
-                completed = dec_queue.front().get();
+                completed = dec_queue.front().get(); 
             } catch (const std::exception& e) {
                 std::cerr << "\n[FATAL] Task exception: " << e.what() << std::endl;
                 fatal_abort = true;
                 break;
             }
             dec_queue.pop();
-
+            
             if (!process_and_write(completed)) {
                 fatal_abort = true;
                 break;
             }
-
+            
             processed_blocks++;
             auto now = std::chrono::steady_clock::now();
             if (std::chrono::duration_cast<std::chrono::milliseconds>(now - last_ui_time).count() >= 500) {
@@ -289,6 +283,7 @@ Result<int> RunReconstruct(const std::string& input_path, const std::string& out
                 return Result<int>(ErrorCode::ERR_UNKNOWN, "Final gap write failed: " + fast_out.get_last_error());
             }
         }
+
         fast_out.flush();
         if (fast_out.has_error()) {
             return Result<int>(ErrorCode::ERR_UNKNOWN, "Final flush failed: " + fast_out.get_last_error());

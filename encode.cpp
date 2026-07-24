@@ -22,6 +22,7 @@ Result<int> RunEncode(const std::string& input_path, const std::string& output_p
     if (!reader.is_open()) {
         return Result<int>(ErrorCode::ERR_FILE_NOT_FOUND, "Failed to open input payload file: " + input_path);
     }
+
     uint64_t fSize = reader.get_size();
     std::cout << "[ENC] Encoding " << fSize / 1024 / 1024 << " MB using " << num_threads << " threads." << std::endl;
 
@@ -32,12 +33,13 @@ Result<int> RunEncode(const std::string& input_path, const std::string& output_p
 
     PreHeader hdr{};
     hdr.magic = 0x50524546;
-    hdr.version = 34; // UPDATED TO V34
+    hdr.version = 34; 
     hdr.original_size = fSize;
     hdr.block_count = 0;
     hdr.use_aes = 0;
     hdr.space_speed_tradeoff_bytes = tradeoff_bytes;
     hdr.quantum_crc = quantum_crc ? 1 : 0;
+
     if (useAES) {
         hdr.use_aes = 1;
         std::copy(aesKey.begin(), aesKey.end(), hdr.aes_key);
@@ -52,11 +54,10 @@ Result<int> RunEncode(const std::string& input_path, const std::string& output_p
         return Result<int>(ErrorCode::ERR_UNKNOWN, "Initial file structure setup failed: " + std::string(e.what()));
     }
 
-    // ✅ Track logical output size manually to bypass buffered tellp() issues
     uint64_t total_out_bytes = sizeof(hdr);
-
     UI ui(fSize, 0, verbose);
     BlockScanner scanner(reader, fSize, useAES, aesKey, Config::WIN_SIZE_LARGE);
+
     uint64_t pos = 0;
     uint64_t last_out = 0;
     std::vector<PreBlock> blocks;
@@ -69,7 +70,6 @@ Result<int> RunEncode(const std::string& input_path, const std::string& output_p
 
     std::vector<uint32_t> usizes_vec(std::begin(Config::TEST_USIZES), std::end(Config::TEST_USIZES));
     ObjectPool<char> gap_pool(num_threads * 2, Config::GAP_POOL_CHUNK);
-
     OodleLZ_CompressOptions opts = {};
     opts.version = 232;
     opts.spaceSpeedTradeoffBytes = tradeoff_bytes;
@@ -77,10 +77,6 @@ Result<int> RunEncode(const std::string& input_path, const std::string& output_p
 
     std::atomic<bool> fatal_io_error{false};
 
-    // [FIX: Destructor Order / Use-After-Free Prevention]
-    // Initializing the ThreadPool AFTER all reference-captured structures (like opts and gap_pool).
-    // This guarantees that if an early exit happens, the ThreadPool is destroyed FIRST,
-    // safely joining background worker threads before the structures they reference are cleared from memory.
     ThreadPool pool(num_threads);
 
     auto process_single_task = [&](std::shared_ptr<BlockTask> task) -> bool {
@@ -91,7 +87,7 @@ Result<int> RunEncode(const std::string& input_path, const std::string& output_p
                     fatal_io_error = true; return false;
                 }
                 if (fast_out.has_error()) { fatal_io_error = true; return false; }
-                total_out_bytes += gap_size; // ✅ Track gap
+                total_out_bytes += gap_size; 
             }
 
             if (task->exact_match_found) {
@@ -99,20 +95,22 @@ Result<int> RunEncode(const std::string& input_path, const std::string& output_p
                 BlockHeader bh{task->usize};
                 fast_out.write(reinterpret_cast<const char*>(&bh), sizeof(bh));
                 if (fast_out.has_error()) { fatal_io_error = true; return false; }
+
                 fast_out.write(reinterpret_cast<const char*>(task->dec_data.data()), task->usize);
                 if (fast_out.has_error()) { fatal_io_error = true; return false; }
-                
-                total_out_bytes += sizeof(bh) + task->usize; // ✅ Track match
+                total_out_bytes += sizeof(bh) + task->usize; 
 
                 std::vector<uint8_t> written(sizeof(BlockHeader) + task->usize);
                 std::memcpy(written.data(), &bh, sizeof(BlockHeader));
                 std::memcpy(written.data() + sizeof(BlockHeader), task->dec_data.data(), task->usize);
                 uint32_t crc = CalculateCRC32(written.data(), written.size());
+
                 blocks.push_back({
                     task->pos, static_cast<uint32_t>(sizeof(bh) + bh.stored_size), task->usize, task->csize,
                     static_cast<uint32_t>(task->matched_method | (task->matched_level << 8)), 1,
                     static_cast<uint8_t>(task->is_encrypted ? 1 : 0), 0, crc
                 });
+
                 if (verbose) {
                     std::ostringstream ss;
                     ss << "Match Found at 0x" << std::hex << task->pos << std::dec
@@ -124,8 +122,7 @@ Result<int> RunEncode(const std::string& input_path, const std::string& output_p
                 fail_count++;
                 fast_out.write(reinterpret_cast<const char*>(task->raw_win_buf.data()), task->csize);
                 if (fast_out.has_error()) { fatal_io_error = true; return false; }
-                
-                total_out_bytes += task->csize; // ✅ Track fail
+                total_out_bytes += task->csize; 
 
                 uint32_t crc = CalculateCRC32(task->raw_win_buf.data(), task->csize);
                 blocks.push_back({
@@ -133,6 +130,7 @@ Result<int> RunEncode(const std::string& input_path, const std::string& output_p
                     static_cast<uint32_t>(effective_m_ids[0]), 0,
                     static_cast<uint8_t>(task->is_encrypted ? 1 : 0), 0, crc
                 });
+
                 if (verbose) {
                     std::ostringstream ss;
                     ss << "Match Failed at 0x" << std::hex << task->pos << std::dec << " | Tracked and stored verbatim.";
@@ -144,6 +142,7 @@ Result<int> RunEncode(const std::string& input_path, const std::string& output_p
             fatal_io_error = true;
             return false;
         }
+
         last_out = task->pos + task->csize;
         task->raw_win_buf.clear();
         task->dec_data.clear();
@@ -151,24 +150,26 @@ Result<int> RunEncode(const std::string& input_path, const std::string& output_p
     };
 
     auto last_ui_time = std::chrono::steady_clock::now();
+
     while (true) {
         auto task = scanner.extract_next_block(pos, fSize, usizes_vec);
         auto now = std::chrono::steady_clock::now();
+
         if (std::chrono::duration_cast<std::chrono::milliseconds>(now - last_ui_time).count() >= 500) {
             ui.set_stats(good_matches_count, fail_count);
-            ui.update(pos, static_cast<uint32_t>(blocks.size()), "ENC", total_out_bytes); // ✅ Use tracked size for UI
+            ui.update(pos, static_cast<uint32_t>(blocks.size()), "ENC", total_out_bytes); 
             last_ui_time = now;
         }
+
         if (!task) break;
 
         pipeline.push_back(pool.enqueue([&effective_m_ids, opt_levels, opt_auto, opt_force, &detected_auto_level_by_method, &opts, task]() {
-            thread_local std::vector<uint8_t> local_buf_vec;
-            thread_local std::vector<uint8_t> scratch_mem;
-            const size_t SCRATCH_SIZE = 8 * 1024 * 1024;
-            if (scratch_mem.size() < SCRATCH_SIZE) scratch_mem.resize(SCRATCH_SIZE);
+            static ReusableBufferPool<uint8_t> g_enc_scratch_pool;
+            static ReusableBufferPool<uint8_t> g_enc_buf_pool;
 
+            PooledBuffer<uint8_t> scratch_mem(g_enc_scratch_pool, 8 * 1024 * 1024);
             size_t required_size = static_cast<size_t>(task->usize) * 2 + 65536;
-            if (local_buf_vec.size() < required_size) local_buf_vec.resize(required_size);
+            PooledBuffer<uint8_t> local_buf_vec(g_enc_buf_pool, required_size);
             uint8_t* local_buf = local_buf_vec.data();
 
             int32_t static_levels[10];
@@ -204,10 +205,12 @@ Result<int> RunEncode(const std::string& input_path, const std::string& output_p
                     }
                     return false;
                 }
+
                 if (opt_auto) {
                     int32_t cached = (method >= 0 && method < (int32_t)detected_auto_level_by_method.size())
                                      ? detected_auto_level_by_method[method].load() : -1;
                     std::vector<int32_t> levels_to_try = (cached != -1) ? std::vector<int32_t>{cached} : std::vector<int32_t>{4, 6, 7};
+
                     for (int32_t test_level : levels_to_try) {
                         int64_t res = OodleLZ_Compress(method, task->dec_data.data(), task->usize,
                                                        local_buf, test_level, &opts, nullptr, nullptr, scratch_mem.data(), scratch_mem.size());
@@ -239,7 +242,6 @@ Result<int> RunEncode(const std::string& input_path, const std::string& output_p
                 if (is_allowed && method == known_method) continue;
                 if (try_method(method)) return task;
             }
-
             return task;
         }));
 
@@ -253,6 +255,7 @@ Result<int> RunEncode(const std::string& input_path, const std::string& output_p
                 break;
             }
             pipeline.pop_front();
+
             if (fatal_io_error) break;
             if (!process_single_task(completed)) {
                 break;
@@ -287,28 +290,32 @@ Result<int> RunEncode(const std::string& input_path, const std::string& output_p
             if (fast_out.has_error()) {
                 return Result<int>(ErrorCode::ERR_UNKNOWN, "Final gap write failed: " + fast_out.get_last_error());
             }
-            total_out_bytes += final_gap_size; // ✅ Track final gap
+            total_out_bytes += final_gap_size; 
+
             fast_out.flush();
             if (fast_out.has_error()) {
                 return Result<int>(ErrorCode::ERR_UNKNOWN, "Flush failed: " + fast_out.get_last_error());
             }
         }
+
         hdr.block_count = static_cast<uint32_t>(blocks.size());
         uint64_t metadata_size = blocks.size() * sizeof(PreBlock);
         fast_out.write(reinterpret_cast<const char*>(blocks.data()), metadata_size);
         if (fast_out.has_error()) {
             return Result<int>(ErrorCode::ERR_UNKNOWN, "Failed to write block metadata: " + fast_out.get_last_error());
         }
-        total_out_bytes += metadata_size; // ✅ Track metadata
+        total_out_bytes += metadata_size; 
 
         fast_out.seekp(0);
         if (fast_out.has_error()) {
             return Result<int>(ErrorCode::ERR_UNKNOWN, "Seek failed: " + fast_out.get_last_error());
         }
+
         fast_out.write(reinterpret_cast<const char*>(&hdr), sizeof(hdr));
         if (fast_out.has_error()) {
             return Result<int>(ErrorCode::ERR_UNKNOWN, "Failed to rewrite header: " + fast_out.get_last_error());
         }
+
         fast_out.flush();
         if (fast_out.has_error()) {
             return Result<int>(ErrorCode::ERR_UNKNOWN, "Final flush failed: " + fast_out.get_last_error());
@@ -319,6 +326,7 @@ Result<int> RunEncode(const std::string& input_path, const std::string& output_p
 
     uint32_t total = good_matches_count + fail_count;
     double match_pct = total > 0 ? static_cast<double>(good_matches_count) / total * 100.0 : 0.0;
+
     std::set<int32_t> u_methods, u_levels;
     for (const auto& b : blocks) {
         if (b.exact_match) {
@@ -326,13 +334,13 @@ Result<int> RunEncode(const std::string& input_path, const std::string& output_p
             u_levels.insert(b.compressor >> 8);
         }
     }
+
     std::string method_str, level_str;
     for (int m : u_methods) method_str += std::to_string(m) + "+";
     for (int l : u_levels) level_str += std::to_string(l) + "+";
     if (!method_str.empty()) method_str.pop_back();
     if (!level_str.empty()) level_str.pop_back();
 
-    // ✅ Use the manually tracked size instead of broken tellp()
     uint64_t final_size = total_out_bytes;
 
     std::cout << std::endl << "--- Encoder Processing Metrics ---" << std::endl

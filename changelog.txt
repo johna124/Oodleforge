@@ -1,4 +1,59 @@
 ================================================================================
+OodleForge v34.1 Changelog
+Build Date: July 24, 2026
+Focus: Extreme Memory Discipline, SIMD Hot-Path Optimization, Cryptographic Type Safety, and Bulletproof Malicious File Resistance.
+================================================================================
+
+## 🛡️ Core Stability & Security Hardening
+✅ FIX #1: MinGW `winpthread` TLS Memory Leak Workaround
+- Eradicated all `thread_local std::vector` usage across `common.cpp`, `encode.cpp`, and `reconstruct.cpp`.
+- Introduced `ReusableBufferPool` and `PooledBuffer` RAII wrappers to bypass the known MinGW static-linking bug where TLS destructors are never called, preventing bounded memory leaks during ThreadPool teardown.
+- Files: common.h, common.cpp, encode.cpp, reconstruct.cpp
+
+✅ FIX #2: Cryptographic Bridge Type Safety (Opaque Pointer Pattern)
+- Replaced unsafe `void*` AES context pointers with an incomplete struct `struct AES_ctx;` and a custom `AESContextDeleter`.
+- Enforced the Rule of Five on `BlockScanner` to guarantee the compiler never attempts to instantiate the `unique_ptr` destructor in translation units lacking the complete `AES_ctx` definition.
+- Files: common.h, common.cpp
+
+✅ FIX #3: `BlockScanner::ensure_window` Overflow & Bounds Hardening
+- Replaced vulnerable addition checks with safe subtraction inequalities to prevent 64-bit integer wrap-around on malicious file offsets.
+- Added strict clamping to all `pread` requests to mathematically guarantee zero out-of-bounds reads.
+- Files: common.cpp
+
+✅ FIX #4: `WalkOodleChain` Infinite Loop & Thrashing Prevention
+- Implemented strict sane sizing clamps: Rejects chunks > 8 MB or < 16 bytes to prevent I/O thrashing on deceptive filler structures.
+- Removed the false-positive-prone `0x00080005` "Magic Killer" escape valve.
+- Files: common.cpp
+
+✅ FIX #5: `write_gap` Infinite Loop Protection
+- Added a zero-read safety counter to prevent infinite CPU spinning if `pread` unexpectedly returns 0 (e.g., file truncation mid-read).
+- Files: common.cpp
+
+## 🚀 Performance & SIMD Upgrades
+• AVX2 Register-Level OR Optimization
+- Refactored `find_next_magic()` to perform bitwise ORs (`_mm256_or_si256`) *inside* the SIMD registers before extracting the mask with `_mm256_movemask_epi8`.
+- Reduces General Purpose Register (GPR) pressure, preserves exact spatial byte identity, and compiles to a tighter assembly loop.
+- Files: common.cpp
+
+• Zero-Allocation Hot-Path in `extract_next_block`
+- Replaced repetitive 4MB heap allocations with the new `ReusableBufferPool`. The decompression buffer is now allocated exactly once per process and recycled indefinitely, completely eliminating heap fragmentation on the scanner's hot path.
+- Files: common.cpp
+
+• Controlled Magic Byte Skip Heuristic
+- Capped `skip_to_next_magic` search window to 16 bytes. If no magic byte is found within the safe window, the scanner advances by exactly 1 byte, mathematically guaranteeing that no legitimate Oodle chain is skipped.
+- Files: common.cpp
+
+## 🛠️ Modern C++ & Compilation Fixes
+• `Result<T>` Ref-Qualified Move Semantics
+- Upgraded `Result<T>::get_value()` to use C++ ref-qualifiers (`&`, `const &`, `&&`), enabling safe O(1) move extraction for large payloads without triggering GCC/MinGW overload resolution ambiguities.
+- Files: common.h
+
+• `ThreadPool::enqueue` C++17 Syntax
+- Replaced verbose `typename std::invoke_result<F>::type` with the C++17 alias `std::invoke_result_t<F>`, eliminating template parsing ambiguities in strict MinGW/GCC environments.
+- Files: common.h
+
+
+================================================================================
 OodleForge v34 Changelog
 Build Date: July 6, 2026
 Focus: Memory Discipline, I/O Tracking Accuracy, Core Compilation Stability, 

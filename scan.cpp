@@ -1,26 +1,29 @@
 #include "common.h"
 
 Result<int> RunScan(const std::string& input_path, bool verbose, int num_threads,
-    const std::vector<int32_t>& m_ids, const std::vector<int32_t>& opt_levels,
-    bool opt_auto, bool opt_force, const std::vector<uint8_t>& aesKey,
-    bool useAES, double scan_percent, bool debug_mode,
-    uint32_t tradeoff_bytes, bool quantum_crc)
+                    const std::vector<int32_t>& m_ids, const std::vector<int32_t>& opt_levels,
+                    bool opt_auto, bool opt_force, const std::vector<uint8_t>& aesKey,
+                    bool useAES, double scan_percent, bool debug_mode,
+                    uint32_t tradeoff_bytes, bool quantum_crc) 
 {
     if (scan_percent <= 0.0 || scan_percent > 100.0) {
-        return Result<int>(ErrorCode::ERR_INVALID_ARGUMENT, "Scan percentage must be between 0.0 and 100.0");
+        return Result<int>(ErrorCode::ERR_INVALID_ARGUMENT, std::string("Scan percentage must be between 0.0 and 100.0"));
     }
+
     Logger::Init(debug_mode);
+
     ThreadSafeReader reader(input_path);
     if (!reader.is_open()) {
         return Result<int>(ErrorCode::ERR_FILE_NOT_FOUND, "Failed to open input file: " + input_path);
     }
+
     uint64_t fSize = reader.get_size();
     uint64_t scan_limit = static_cast<uint64_t>(fSize * (scan_percent / 100.0));
     if (scan_percent >= 99.9) scan_limit = fSize;
 
     std::cout << "[BUILD MARKER: STABLE_V2_" << __DATE__ << "_" << __TIME__ << "]" << std::endl;
-    std::cout << "[SCAN] Scanning " << scan_percent << "% of file ("
-              << scan_limit / 1024 / 1024 << " / " << fSize / 1024 / 1024
+    std::cout << "[SCAN] Scanning " << scan_percent << "% of file (" 
+              << scan_limit / 1024 / 1024 << " / " << fSize / 1024 / 1024 
               << " MB) using " << num_threads << " threads." << std::endl;
 
     OodleLZ_CompressOptions opts = {};
@@ -31,25 +34,27 @@ Result<int> RunScan(const std::string& input_path, bool verbose, int num_threads
     UI ui(scan_limit, 0, verbose);
     size_t actual_win = Config::WIN_SIZE_LARGE;
     BlockScanner scanner(reader, fSize, useAES, aesKey, actual_win);
+
     ScanStats stats;
     std::set<std::pair<int32_t, int32_t>> identified_cache;
     std::shared_mutex scan_mutex;
     std::queue<std::future<std::shared_ptr<BlockTask>>> scan_queue;
-    
-    // [OPTIMIZATION: Lock-Free Statistics]
-    // Replaced map/mutex with atomic arrays to eliminate hot-path lock contention.
-    // 16 is sufficient to cover standard Oodle methods (up to 13) and levels (1-9).
+
     std::array<std::atomic<uint32_t>, 16> method_counts_atomic{};
     std::array<std::atomic<uint32_t>, 16> level_counts_atomic{};
 
     uint64_t pos = 0;
     uint64_t last_block_end = 0;
     std::vector<std::pair<uint64_t, uint64_t>> gaps;
+
     auto last_ui_time = std::chrono::steady_clock::now();
+
     std::vector<uint32_t> usizes_vec(std::begin(Config::TEST_USIZES), std::end(Config::TEST_USIZES));
-    std::vector<int32_t> methods_vec = m_ids.empty()
-        ? std::vector<int32_t>(std::begin(Config::ALL_METHODS), std::end(Config::ALL_METHODS))
+    
+    std::vector<int32_t> methods_vec = m_ids.empty() 
+        ? std::vector<int32_t>(std::begin(Config::ALL_METHODS), std::end(Config::ALL_METHODS)) 
         : m_ids;
+    
     std::vector<int32_t> levels_vec;
     if (!opt_levels.empty()) {
         levels_vec = opt_levels;
@@ -66,6 +71,7 @@ Result<int> RunScan(const std::string& input_path, bool verbose, int num_threads
     while (pos < scan_limit && pos < fSize) {
         auto task = scanner.extract_next_block(pos, scan_limit, usizes_vec);
         auto now = std::chrono::steady_clock::now();
+
         if (std::chrono::duration_cast<std::chrono::milliseconds>(now - last_ui_time).count() >= 1000) {
             uint32_t m = stats.matches_identified.load(std::memory_order_relaxed);
             uint32_t f = stats.fails_unidentified.load(std::memory_order_relaxed);
@@ -74,25 +80,24 @@ Result<int> RunScan(const std::string& input_path, bool verbose, int num_threads
             ui.update(pos, bf, "SCAN", pos);
             last_ui_time = now;
         }
+
         if (!task) {
             pos += 64;
             continue;
         }
+
         if (task->pos > last_block_end) {
             gaps.push_back({last_block_end, task->pos - last_block_end});
         }
         last_block_end = task->pos + task->csize;
-        
+
         stats.blocks_found.fetch_add(1, std::memory_order_relaxed);
 
         scan_queue.push(pool.enqueue([task, methods_vec, levels_vec, &scan_mutex, &identified_cache, &stats, &opts, &method_counts_atomic, &level_counts_atomic]() {
             int32_t m = -1, l = -1;
             bool match = TryMatchBlock(task, methods_vec, levels_vec, identified_cache, scan_mutex, m, l, &opts);
-            
             if (match) {
                 stats.matches_identified.fetch_add(1, std::memory_order_relaxed);
-                
-                // Atomic increments (no locks)
                 if (m >= 0 && m < 16) method_counts_atomic[m].fetch_add(1, std::memory_order_relaxed);
                 if (l >= 0 && l < 16) level_counts_atomic[l].fetch_add(1, std::memory_order_relaxed);
             } else {
@@ -120,7 +125,6 @@ Result<int> RunScan(const std::string& input_path, bool verbose, int num_threads
         scan_queue.pop();
     }
 
-    // [Reconstruct Statistics for Display]
     std::map<int32_t, uint32_t> final_method_counts;
     std::map<int32_t, uint32_t> final_level_counts;
     for (int i = 0; i < 16; ++i) {
@@ -131,12 +135,12 @@ Result<int> RunScan(const std::string& input_path, bool verbose, int num_threads
     }
 
     std::cout << std::endl << "--- Scan Report ---" << std::endl
-              << "Blocks Found: " << stats.blocks_found.load()
-              << " | Matches: " << stats.matches_identified.load()
+              << "Blocks Found: " << stats.blocks_found.load() 
+              << " | Matches: " << stats.matches_identified.load() 
               << " | Fails: " << stats.fails_unidentified.load() << std::endl;
 
     if (stats.blocks_found.load() > 0) {
-        std::cout << "Success Rate: " << std::fixed << std::setprecision(2)
+        std::cout << "Success Rate: " << std::fixed << std::setprecision(2) 
                   << (static_cast<double>(stats.matches_identified.load()) / stats.blocks_found.load() * 100.0) << "%" << std::endl;
     }
 
@@ -147,6 +151,7 @@ Result<int> RunScan(const std::string& input_path, bool verbose, int num_threads
         }
         std::cout << std::endl;
     }
+
     if (!final_level_counts.empty()) {
         std::cout << "Levels Identified:  ";
         for (auto const& [level_id, count] : final_level_counts) {
@@ -154,8 +159,9 @@ Result<int> RunScan(const std::string& input_path, bool verbose, int num_threads
         }
         std::cout << std::endl;
     }
-    
+
     std::cout << "Time: " << ui.format_time(ui.get_elapsed()) << std::endl;
+
     {
         const auto& d = scanner.diagnostics_;
         std::cout << std::endl << "--- Scan Diagnostics ---" << std::endl
@@ -170,18 +176,22 @@ Result<int> RunScan(const std::string& input_path, bool verbose, int num_threads
     if (scan_limit > last_block_end) {
         gaps.push_back({last_block_end, scan_limit - last_block_end});
     }
+
     {
         uint64_t total_gap_bytes = 0;
         for (const auto& g : gaps) total_gap_bytes += g.second;
         double gap_percentage = (fSize > 0) ? (total_gap_bytes / static_cast<double>(fSize) * 100.0) : 0.0;
+
         std::cout << std::endl << "--- Gap Report ---" << std::endl
                   << "Gap count: " << gaps.size() << " | Total gap bytes: " << total_gap_bytes << std::endl
                   << "Gap percentage: " << gap_percentage << "%" << std::endl;
+
         if (gap_percentage > 15.0) {
             std::cout << "\n⚠️  HIGH GAP PERCENTAGE DETECTED!" << std::endl;
         } else {
             std::cout << "\n✓ Gap percentage is within normal range" << std::endl;
         }
     }
+
     return Result<int>(0);
 }

@@ -147,9 +147,8 @@ Happy Kraken Hunting!
 ================================================================================
 
 Made with blood, sweat, and too much coffee.
-Version 34 - Memory Discipline, I/O Tracking Accuracy, 
-       Lock-Free Performance, Hardware-Accelerated Scanning, Wine Compatibility, 
-       and Bulletproof Correctness.
+Version 34.1 -
+Extreme Memory Discipline, SIMD Hot-Path Optimization, Cryptographic Type Safety, and Bulletproof Malicious File Resistance.
 
 NOTE:
 This project is designed for GCC/Clang (Linux/MinGW). Visual Studio
