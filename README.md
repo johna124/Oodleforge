@@ -18,7 +18,7 @@
 
 </div>
 
-<img src="https://raw.githubusercontent.com/johna124/Oodleforge/main/banner2.jpg" width="600" alt="Oodleforge banner">
+<img src="https://github.com/johna124/Oodleforge/blob/main/banner2.jpg" width="600" alt="Oodleforge banner">
 ---
 
 **45 Days on Potato Hardware**
@@ -60,7 +60,7 @@ Born from 45 days of intense development on legacy hardware (Core 2 Quad Q6600, 
 | **Version** | 34 (PREF! enabled) |
 
 ---
-<img src="https://raw.githubusercontent.com/johna124/Oodleforge/refs/heads/main/v34_1.jpg"/>
+<img src="https://github.com/johna124/Oodleforge/blob/main/v34_1.jpg"/>
 
 
 ## 🎲 The 45-Day Campaign
