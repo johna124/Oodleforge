@@ -1,0 +1,23 @@
+## V33.4 Lore — The Kraken Slayer is Free on Linux
+
+> "The .so is dead. The DLLs are immortal. The Kraken wins anyway."
+
+In the ancient days of 2026, the Oodle gods (Epic Games) hid their sacred .so and .dylib in the deepest vaults of their servers.  
+Every Linux user who dared to hunt the Kraken had to beg for a commercial license, or suffer under the slow, broken Wine of old.
+
+But one lone coder — the 34-day potato-PC warlord — refused to kneel.
+
+He forged the **Memory Beast** async I/O, forged the exact AES-256 per-block cipher, forged the scanner that never misses, and forged the Wine-compatible path that lets every Linux  user run the same god-tier reconstruction.
+
+The result?  
+**Exact byte-for-byte matches.**  
+**The first full-featured Oodle precompressor on Linux .**
+
+The .so is still hidden.  
+But the Kraken is free.  
+And it’s celebrating with fireworks, party hats, and 7z papers flying everywhere.
+
+**Party party!!**  
+The Kraken Slayer is now the undisputed king on Windows, Linux.
+
+Welcome to the new age.
