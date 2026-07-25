@@ -18,7 +18,7 @@
 
 </div>
 
-<img src="https://github.com/johna124/Oodleforge/blob/main/banner2.jpg" width="600" alt="Oodleforge banner">
+<img src="https://github.com/johna124/Oodleforge/blob/main/assets/banner2.jpg" width="600" alt="Oodleforge banner">
 ---
 
 **45 Days on Potato Hardware**
@@ -60,7 +60,7 @@ Born from 45 days of intense development on legacy hardware (Core 2 Quad Q6600, 
 | **Version** | 34 (PREF! enabled) |
 
 ---
-<img src="https://github.com/johna124/Oodleforge/blob/main/v34_1.jpg"/>
+<img src="https://github.com/johna124/Oodleforge/blob/main/assets/v34_1.jpg"/>
 
 
 ## 🎲 The 45-Day Campaign
@@ -68,7 +68,7 @@ Born from 45 days of intense development on legacy hardware (Core 2 Quad Q6600, 
 *Building an elite systems engine on potato hardware with a "Team of Two" framework.*
 
 <div align="center">
-  <img src="https://github.com/johna124/Oodleforge/blob/main/assets/STORY-and-COMICS/dev-comic-45days.png" alt="The 45-Day Development Saga" width="100%">
+  <img src="https://github.com/johna124/Oodleforge/blob/main/assets/STORY-and-COMICS/dev-comic-45day.png" alt="The 45-Day Development Saga" width="100%">
 </div>
 
 What started as a clicking hard drive and a dream became a battle against:
