@@ -218,7 +218,6 @@ oodleforge.exe r archive.oodle restored.bin
 
 The complete visual saga of the swarm's battle against data chaos is preserved in the repository:
 
-- 📂 [HERO_&_POSTERS](https://github.com/johna124/Oodleforge/tree/main/assets/HERO-and-POSTERS) — Team alignment and character sheets
 - 📂 [STORY_and_COMICS](https://github.com/johna124/Oodleforge/tree/main/assets/STORY-and-COMICS) — The definitive battle where the Kraken is slain
 - 📂 [CHARACTER-DOSSIERS](https://github.com/johna124/Oodleforge/tree/main/assets/CHARACTER-DOSSIERS) — Individual agent dossiers (Qwen, Claude, Grok, Gemini, Kernel)
 
