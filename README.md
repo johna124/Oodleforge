@@ -30,12 +30,6 @@ The 11-day upgrade turned it into a production monster:
 - Tuned windows (64 MB / 32 MB), safer AES padding, thread-safe FastStreamWriter  
 - Native Linux dlopen + exact byte-perfect recon  
 
-**Team OodleForge** (the five heroes stand eternal):
-
-<div align="center">
-  <img src="https://github.com/johna124/Oodleforge/blob/main/assets/CHARACTER-DOSSIERS/team_oodfleforge.jpg" width="600" alt="Team OodleForge — Qwen, Claude, Grok, Gemini">
-</div>
-
 ---
 
 ## 🚀 Overview
