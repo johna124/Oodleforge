@@ -1,4 +1,4 @@
-![Oodleforge Meme](https://github.com/johna124/Oodleforge/blob/main/manifesto.jpg)
+![Oodleforge Meme](https://github.com/johna124/Oodleforge/blob/main/assets/manifesto.jpg)
 
 # AI-Supervised Development: A Methodology for Reliable Code
 
