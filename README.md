@@ -71,18 +71,9 @@ Levels Used:  4
 Total Duration:    00:15:35
 ```
 
-
 ---
 <img src="https://github.com/johna124/Oodleforge/blob/main/assets/v34_1.jpg"/>
 
-
-## 🎲 The 45-Day Campaign
-
-*Building an elite systems engine on potato hardware with a "Team of Two" framework.*
-
-<div align="center">
-  <img src="https://github.com/johna124/Oodleforge/blob/main/assets/STORY-and-COMICS/dev-comic-45day.png" alt="The 45-Day Development Saga" width="100%">
-</div>
 
 What started as a clicking hard drive and a dream became a battle against:
 - 🐙 **The Kraken** — Oodle's compression algorithm
@@ -218,15 +209,6 @@ oodleforge.exe r archive.oodle restored.bin
 - **v33.0** — Multi-Method Edition — Full support for Kraken + Leviathan + Mermaid + Selkie + -auto / -force
 - **v32.x** — AES + basic encode/reconstruct
 - **Original OodleForge** (34 days on 2010 PC) — The foundation
-
----
-
-## 🎨 The Lore & Assets
-
-The complete visual saga of the swarm's battle against data chaos is preserved in the repository:
-
-- 📂 [STORY_and_COMICS](https://github.com/johna124/Oodleforge/tree/main/assets/STORY-and-COMICS) — The definitive battle where the Kraken is slain
-- 📂 [CHARACTER-DOSSIERS](https://github.com/johna124/Oodleforge/tree/main/assets/CHARACTER-DOSSIERS) — Individual agent dossiers (Qwen, Claude, Grok, Gemini, Kernel)
 
 ---
 
