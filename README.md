@@ -46,6 +46,7 @@ Born from 45 days of intense development on legacy hardware (Core 2 Quad Q6600, 
 | **Methods** | Full Kraken, Leviathan, Mermaid, Selkie, Hydra |
 | **Version** | 34 (PREF! enabled) |
 
+```text
 Linux
 ENC [99.97%] Blk: 8521 [E:8509 F:12] | 5.58 MB/s | Time: 00:01:24 | ETA: 00:00:00 | Size: 876.01 MB
 --- Encoder Processing Metrics ---
@@ -68,6 +69,8 @@ Full Fails:    117
 Methods Used: 8+9
 Levels Used:  4
 Total Duration:    00:15:35
+```
+
 
 ---
 <img src="https://github.com/johna124/Oodleforge/blob/main/assets/v34_1.jpg"/>
