@@ -3,18 +3,14 @@
 # 🦑 OodleForge v34.1
 
 ### *Exact byte-for-byte reconstruction. 11x faster than Wine.*
-### *"The .so is dead. The .dlls are immortal."*
 
 **Advanced Multi-Method OodleLZ Archive Engine | v34.1**
 
 [![Build Status](https://img.shields.io/badge/build-passing-brightgreen)]()
 [![C++](https://img.shields.io/badge/C%2B%2B-17%2F20-blue)]()
 [![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20Linux-lightgrey)]()
-[![Rating](https://img.shields.io/badge/Elite%20Systems-9.7%2F10-purple)]()
 
 *Exact Reconstruction • AES-256 • Full Kraken/Leviathan/Mermaid/Selkie/Hydra • Async 64 MB Memory Beast I/O • Dynamic Discovery Scanner*
-
-*Written in the Stars, on a Q6600.*
 
 </div>
 
@@ -34,12 +30,9 @@ The 11-day upgrade turned it into a production monster:
 
 ## 🚀 Overview
 
-**OodleForge** is a high-performance C++ archive engine built for **exact byte-for-byte reconstruction** of Oodle-compressed data with integrated **AES-256 cryptographic security**. 
+OodleForge is a high-performance C++ CLI tool for **exact** reconstruction and encoding of OodleLZ-compressed archives. It fully supports all modern Oodle methods (Kraken 8/11, Leviathan, Mermaid 9, Selkie, Hydra 13 this one is -EXPERIMENTAL-) with per-block AES-256-CBC encryption.
 
-Born from 45 days of intense development on legacy hardware (Core 2 Quad Q6600, 8GB RAM), OodleForge represents a masterclass in pragmatic systems engineering — balancing aggressive asynchronous I/O, precise data reconstruction, and cryptographic security under severe resource constraints.
-
-> *"Potato Hardware optimized. Systems silent. The complete Cognitive Swarm achieved liberty. 11x faster."*
-
+Born from 45 days of intense development on legacy hardware (Core 2 Quad Q6600, 8GB RAM)
 ---
 
 ## ⚡ Key Features
@@ -52,6 +45,29 @@ Born from 45 days of intense development on legacy hardware (Core 2 Quad Q6600, 
 | **Memory Model** | "Memory Beast" — 64MB ring buffer |
 | **Methods** | Full Kraken, Leviathan, Mermaid, Selkie, Hydra |
 | **Version** | 34 (PREF! enabled) |
+
+Linux
+ENC [99.97%] Blk: 8521 [E:8509 F:12] | 5.58 MB/s | Time: 00:01:24 | ETA: 00:00:00 | Size: 876.01 MB
+--- Encoder Processing Metrics ---
+Input File Size:        472.88 MB
+Processed Output Size:  876.92 MB
+Exact Matches: 8523 (99.86%)
+Full Fails:    12
+Methods Used: 8+9
+Levels Used:  4
+Total Duration:    00:01:25
+
+
+Wine
+ENC [100.00%] Blk: 8530 [E:8413 F:117] | 0.51 MB/s | Time: 00:15:35 | ETA: 00:00:00 | Size: 871.28 MB
+--- Encoder Processing Metrics ---
+Input File Size:        472.88 MB
+Processed Output Size:  871.65 MB
+Exact Matches: 8418 (98.63%)
+Full Fails:    117
+Methods Used: 8+9
+Levels Used:  4
+Total Duration:    00:15:35
 
 ---
 <img src="https://github.com/johna124/Oodleforge/blob/main/assets/v34_1.jpg"/>
@@ -70,8 +86,6 @@ What started as a clicking hard drive and a dream became a battle against:
 - 🧠 **The Memory Beast** — 64MB ring buffer management  
 - 🥔 **Potato Hardware** — The environmental hazard
 - ⏱️ **45 Days** — The time pressure mechanic
-
-**The result?** The Kraken is slain. The Cognitive Swarm is eternal.
 
 ---
 
@@ -103,11 +117,7 @@ Building an archive engine of this complexity solo within a tight timeframe on a
 |-----------|----------------|
 | **Task Contracts over Prompt Prose** | Small, isolated, atomic tasks eliminate context poisoning and logical decay |
 | **Human-Owned Architecture** | Structural validation stays in human hands — no hallucinatory dependencies |
-| **Early Integration & Stress Testing** | Real behavior under heavy I/O pressure > 10,000 lines of unverified code |
-
-The **Cognitive Swarm** (Qwen, Claude, Gemini, Grok) served as the engineering team, while the **Human Kernel** maintained architectural sovereignty.
-
-> *"Assemblers of Optimized Reality from Chaos."*
+| **Early Integration & Stress Testing** | Real behavior under heavy I/O pressure |
 
 ---
 
@@ -241,7 +251,5 @@ May your matches be many, your fails be few, and your MB/s forever high.
 — The Oodleforger
 
 🎵 **OST:** https://www.youtube.com/watch?v=NCfNOwJ8BNs
-
-**[⭐ Star this repo if the Cognitive Swarm resonates with you!](https://github.com/johna124/Oodleforge)**
 
 </div>
