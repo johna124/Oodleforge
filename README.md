@@ -243,10 +243,6 @@ We are grateful to everyone who has helped make this tool better.
 
 <div align="center">
 
-### 🏆 THE KRAKEN IS SLAIN. THE COGNITIVE SWARM IS ETERNAL. 🏆
-
-*Built in 45 days. On potato hardware. With a team of two.*
-
 ## Happy Kraken Hunting!
 
 May your matches be many, your fails be few, and your MB/s forever high.
